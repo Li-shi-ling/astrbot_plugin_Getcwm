@@ -370,9 +370,8 @@ class MyPlugin(Star):
     async def Getcwm(self, event: AstrMessageEvent):
         '''一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助'''
         text = event.get_message_str()
-        logging.info(text)
-        params = extract_help_parameters(text, "/Getcwm")
-        logging.info(params)
+        params = extract_help_parameters(text, "Getcwm")
+        logging.info("params为:" + ",".join(params))
         directives = params[0]
         if "help" in directives:
             yield event.plain_result("\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
