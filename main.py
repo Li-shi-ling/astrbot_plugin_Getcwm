@@ -365,7 +365,7 @@ class MyPlugin(Star):
         self.output_path = "./img"
         self.help_dict = {
             "help": "查看帮助",
-            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括(每章间贴数,更新时间点,章更新字数,日更新字数,间贴排行榜前10,间贴排行榜后10)\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]"
+            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括每章间贴数,更新时间点,章更新字数,日更新字数,间贴排行榜前10,间贴排行榜后10\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]"
         }
         if not os.path.exists(self.output_path):
             os.makedirs(self.output_path)
