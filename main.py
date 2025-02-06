@@ -27,9 +27,9 @@ def plot_data(chapterdata, name, output_path = "./img"):
 
     df = pd.DataFrame(chapterdata, columns=["chapterid", "chaptername", "GapStickers", "updatatime", "words"])
 
-    pd.set_option('display.max_rows', None)
-    pd.set_option('display.max_columns', None)
-    logging.info(df)
+    # pd.set_option('display.max_rows', None)
+    # pd.set_option('display.max_columns', None)
+    # logging.info(df)
 
     df['updatatime'] = pd.to_datetime(df['updatatime'])
 
