@@ -11,7 +11,6 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-
 # 获取指令后面的参数
 def extract_help_parameters(s, directives):
     escaped_directives = re.escape(directives)
@@ -20,7 +19,6 @@ def extract_help_parameters(s, directives):
         params = re.split(r'\s+', match.group(1).strip())  # 使用 \s+ 来处理多个空格
         return params
     return []
-
 
 # 绘画
 def plot_data(chapterdata, name, output_path="./img"):
@@ -94,7 +92,6 @@ def plot_data(chapterdata, name, output_path="./img"):
     plt.clf()
 
     logging.info("Charts have been generated and saved!")
-
 
 # 刺猬猫爬虫类别
 class GetCwm:
@@ -359,7 +356,6 @@ class GetCwm:
                 else:
                     outputdata.append([data[0], data[1], GapStickers, updatatime, int(words)])
         return outputdata
-
 
 @register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.0", "repo url")
 class MyPlugin(Star):
