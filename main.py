@@ -2,7 +2,6 @@ import os
 import re
 import logging
 import requests
-import numpy as np
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -372,6 +371,7 @@ class MyPlugin(Star):
         '''一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助'''
         text = event.get_message_str()
         params = extract_help_parameters(text, "/Getcwm")
+        logging.info(params)
         directives = params[0]
         if "help" in directives:
             yield event.plain_result("\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
