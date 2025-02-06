@@ -9,10 +9,11 @@ import matplotlib.pyplot as plt
 from astrbot.api.star import Context, Star, register
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 
-logging.basicConfig(level=logging.DEBUG,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 
 # 获取指令后面的参数
-def extract_help_parameters(s,directives):
+def extract_help_parameters(s, directives):
     escaped_directives = re.escape(directives)
     match = re.search(f'{escaped_directives}' + r'\s+(.*)', s)
     if match:
@@ -20,8 +21,9 @@ def extract_help_parameters(s,directives):
         return params
     return []
 
+
 # 绘画
-def plot_data(chapterdata, name, output_path = "./img"):
+def plot_data(chapterdata, name, output_path="./img"):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
@@ -40,31 +42,31 @@ def plot_data(chapterdata, name, output_path = "./img"):
     plt.figure(figsize=(18, 8))
 
     plt.subplot(3, 2, 1)
-    plt.title(f"Gap Stickers Count")
-    plt.xlabel('Chapter')
-    plt.ylabel('Quantity')
+    plt.title(f"每章间贴数")
+    plt.xlabel('章节')
+    plt.ylabel('数量')
     plt.bar(range(len(df)), df['GapStickers'])
 
     plt.subplot(3, 2, 2)
     updated_times = df['updatatime'].dt.hour
     updated_dict = updated_times.value_counts().sort_index()
-    plt.title(f"Update Time Points")
-    plt.xlabel('Time (Hour)')
-    plt.ylabel('Frequency')
+    plt.title(f"更新时间点")
+    plt.xlabel('时间点(24小时制)')
+    plt.ylabel('计数')
     plt.bar(updated_dict.index, updated_dict.values)
 
     plt.subplot(3, 2, 3)
-    plt.title(f"Word Count")
-    plt.xlabel('Chapter')
-    plt.ylabel('Quantity')
+    plt.title(f"每章字数")
+    plt.xlabel('章节')
+    plt.ylabel('计数')
     plt.bar(range(len(df)), df['words'])
 
     plt.subplot(3, 2, 4)
     updated_words = df.groupby(df['updatatime'].dt.date)['words'].sum()
     updated_words.index = pd.to_datetime(updated_words.index).strftime('%Y-%m-%d')
-    plt.title(f"Daily Word Count Updates")
-    plt.xlabel('Date')
-    plt.ylabel('Quantity')
+    plt.title(f"日更新字数")
+    plt.xlabel('时间')
+    plt.ylabel('计数')
     plt.bar(updated_words.index, updated_words.values)
 
     step = max(1, len(updated_words) // 10)
@@ -76,16 +78,16 @@ def plot_data(chapterdata, name, output_path = "./img"):
     plt.subplot(3, 2, 5)
     top_min_df = df.nsmallest(10, 'GapStickers')
     plt.barh(top_min_df['chaptername'], top_min_df['GapStickers'], color='skyblue')
-    plt.xlabel('Gap Stickers Count')
-    plt.ylabel('Chapter Name')
-    plt.title(f'Chapters with Least Gap Stickers (Top 10)')
+    plt.xlabel('间贴数')
+    plt.ylabel('章节名')
+    plt.title(f'间贴排行榜后10')
 
     plt.subplot(3, 2, 6)
     top_max_df = df.nlargest(10, 'GapStickers')
     plt.barh(top_max_df['chaptername'], top_max_df['GapStickers'], color='skyblue')
-    plt.xlabel('Gap Stickers Count')
-    plt.ylabel('Chapter Name')
-    plt.title(f'Chapters with Most Gap Stickers (Top 10)')
+    plt.xlabel('间贴数')
+    plt.ylabel('章节名')
+    plt.title(f'间贴排行榜前10')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_path, f"{name}.png"))
@@ -93,10 +95,11 @@ def plot_data(chapterdata, name, output_path = "./img"):
 
     logging.info("Charts have been generated and saved!")
 
+
 # 刺猬猫爬虫类别
 class GetCwm:
     # 获取书籍名字对应的书籍(使用cwm的搜索引擎,可能会搜索不到)
-    def Get_name(self,name):
+    def Get_name(self, name):
         data = requests.get('https://www.ciweimao.com/get-search-book-list/0-0-0-0-0-0/全部/' + name + '/1').text
         book_matches = re.findall(
             r'<p class="tit"><a href="https://www\.ciweimao\.com/book/(\d+)"[^>]+>([^<]+)</a></p>', data)
@@ -123,11 +126,11 @@ class GetCwm:
         return outputdata
 
     # 获取书籍tag对应的书籍(使用cwm的搜索引擎,可能会搜索不到)(获取所有对应标签的书)
-    def Get_tag(self,tag, n):
+    def Get_tag(self, tag, n):
         return requests.get('https://www.ciweimao.com/get-search-book-list/0-0-0-0-0-0/全部/' + tag + '/' + str(n)).text
 
     # 网页解析
-    def Get_tag_html_content(self,html_content):
+    def Get_tag_html_content(self, html_content):
         soup = BeautifulSoup(html_content, "html.parser")
         novel_list = soup.find_all("li", {"data-book-id": True})
         novels = []
@@ -159,11 +162,11 @@ class GetCwm:
         return novels
 
     # 获取书籍id对应的书籍
-    def Get_id(self,id_data):
+    def Get_id(self, id_data):
         return requests.get('https://www.ciweimao.com/book/' + str(id_data)).text
 
     # 只获取对应id的书
-    def Get_id_html_content(self,html_content):
+    def Get_id_html_content(self, html_content):
         try:
             soup = BeautifulSoup(html_content, "html.parser")
         except Exception as e:
@@ -191,7 +194,8 @@ class GetCwm:
             Tag_List = []
 
         try:
-            Chapter_Name, Update_Time = self.extract_chapter_info(soup.find("p", class_="update-time").get_text(strip=True))
+            Chapter_Name, Update_Time = self.extract_chapter_info(
+                soup.find("p", class_="update-time").get_text(strip=True))
         except Exception as e:
             logging.error(f"最新章节和时间获取错误:{e}")
             Chapter_Name = ""
@@ -204,7 +208,8 @@ class GetCwm:
             Brief_Introduction = ""
 
         try:
-            data = [i.get_text(strip=True).replace("：",":") for i in soup.find("div", class_="book-property clearfix").find_all("span")]
+            data = [i.get_text(strip=True).replace("：", ":") for i in
+                    soup.find("div", class_="book-property clearfix").find_all("span")]
         except Exception as e:
             logging.error(f"分析数据获取错误:{e}")
             data = []
@@ -217,19 +222,19 @@ class GetCwm:
             data2 = []
 
         outputdata = {
-            "Works_Name":Works_Name,
-            "Author_Name":Author_Name,
-            "Tag_List":Tag_List,
-            "Chapter_Name":Chapter_Name,
-            "Update_Time":Update_Time,
-            "Brief_Introduction":Brief_Introduction,
-            "data":data,
-            "data2":data2
+            "Works_Name": Works_Name,
+            "Author_Name": Author_Name,
+            "Tag_List": Tag_List,
+            "Chapter_Name": Chapter_Name,
+            "Update_Time": Update_Time,
+            "Brief_Introduction": Brief_Introduction,
+            "data": data,
+            "data2": data2
         }
         return outputdata
 
     # 获取更新时间
-    def extract_chapter_info(self,text):
+    def extract_chapter_info(self, text):
         match = re.search(r'最后更新：(.*?)\s\[(.*?)\]', text)
         if match:
             chapter_title = match.group(1).strip()
@@ -241,7 +246,7 @@ class GetCwm:
             return None, int(datetime.strptime(re.search(r'\[(.*?)\]', text).group(1).strip(), '%Y-%m-%d %H:%M:%S'))
 
     # 获取书籍id的更新时间
-    def Get_id2time(self,id_data):
+    def Get_id2time(self, id_data):
         try:
             html_content = requests.get('https://www.ciweimao.com/book/' + str(id_data)).text
         except Exception as e:
@@ -255,7 +260,8 @@ class GetCwm:
             return None
 
         try:
-            Chapter_Name, Update_Time = self.extract_chapter_info(soup.find("p", class_="update-time").get_text(strip=True))
+            Chapter_Name, Update_Time = self.extract_chapter_info(
+                soup.find("p", class_="update-time").get_text(strip=True))
         except Exception as e:
             logging.error(f"最新章节和时间获取错误:{e}")
             Chapter_Name = ""
@@ -273,7 +279,7 @@ class GetCwm:
     def Get_gap_stickers(self, id_data):
         datas = {}
         try:
-            book_detail = requests.get(url = f"https://www.ciweimao.com/chapter-list/{id_data}/book_detail")
+            book_detail = requests.get(url=f"https://www.ciweimao.com/chapter-list/{id_data}/book_detail")
             soup = BeautifulSoup(book_detail.text, 'html.parser')
             book_chapter_list = soup.find_all('ul', class_="book-chapter-list")
             for book_chapter in book_chapter_list:
@@ -290,7 +296,7 @@ class GetCwm:
     # 获取每一个章节的详细信息,并储存到csv
     def Get_chapter_information(self, datas, oldchapterids, outputputh):
         chapterids = list(datas)
-        with open(outputputh,"a") as f:
+        with open(outputputh, "a") as f:
             for chapterid in chapterids:
                 if not int(chapterid) in oldchapterids:
                     GapStickers, updatatime, words = None, None, None
@@ -308,24 +314,27 @@ class GetCwm:
                         logging.error(f"Getchapterinformation报错:{e}")
                     finally:
                         if GapStickers is None or updatatime is None or words is None:
-                            logging.error(f"写入失败:{chapterid},{datas[chapterid]['title']},{GapStickers},{updatatime},{words}\n")
+                            logging.error(
+                                f"写入失败:{chapterid},{datas[chapterid]['title']},{GapStickers},{updatatime},{words}\n")
                         else:
-                            logging.error(f"已写入:{chapterid},{datas[chapterid]['title']},{GapStickers},{updatatime},{words}\n")
+                            logging.error(
+                                f"已写入:{chapterid},{datas[chapterid]['title']},{GapStickers},{updatatime},{words}\n")
                             f.write(f"{chapterid},{datas[chapterid]['title']},{GapStickers},{updatatime},{words}\n")
 
     # 获取最新n个章节的详细信息
-    def Get_chapter_informationforn(self, id_data, n = 50):
+    def Get_chapter_informationforn(self, id_data, n=50):
         datas = []
         try:
-            book_detail = requests.get(url = f"https://www.ciweimao.com/chapter-list/{id_data}/book_detail")
+            book_detail = requests.get(url=f"https://www.ciweimao.com/chapter-list/{id_data}/book_detail")
             soup = BeautifulSoup(book_detail.text, 'html.parser')
             book_chapter_list = soup.find_all('ul', class_="book-chapter-list")
             for book_chapter in book_chapter_list:
                 a_list = book_chapter.find_all('a')
                 for a in a_list:
-                    datas.append([int(a['href'].split("/")[-1]),a.text.replace("\t", "").replace("\n", "").replace("\r", "")])
+                    datas.append(
+                        [int(a['href'].split("/")[-1]), a.text.replace("\t", "").replace("\n", "").replace("\r", "")])
             datas.sort(key=lambda x: int(x[0]))
-            datas = datas[max(0,len(datas) - n):]
+            datas = datas[max(0, len(datas) - n):]
         except Exception as e:
             logging.error(f"Get_chapter_informationforn报错:{e}")
 
@@ -348,8 +357,9 @@ class GetCwm:
                 if GapStickers is None or updatatime is None or words is None:
                     logging.error(f"写入失败:{data[0]},{data[1]},{GapStickers},{updatatime},{words}\n")
                 else:
-                    outputdata.append([data[0],data[1],GapStickers,updatatime,int(words)])
+                    outputdata.append([data[0], data[1], GapStickers, updatatime, int(words)])
         return outputdata
+
 
 @register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.0", "repo url")
 class MyPlugin(Star):
@@ -358,12 +368,12 @@ class MyPlugin(Star):
         self.getcwm = GetCwm()
         self.output_path = "./img"
         self.help_dict = {
-            "help" : "查看帮助",
-            "jt" : "使用cwm对应数据进行画图\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]"
+            "help": "查看帮助",
+            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括(每章间贴数,更新时间点,章更新字数,日更新字数,间贴排行榜前10,间贴排行榜后10)\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]"
         }
         if not os.path.exists(self.output_path):
             os.makedirs(self.output_path)
-    
+
     # 获取cwm数据代码
     @filter.command("Getcwm")
     async def Getcwm(self, event: AstrMessageEvent):
@@ -398,7 +408,7 @@ class MyPlugin(Star):
                 yield event.plain_result(f"jt获取错误")
                 return
             else:
-                plot_data(chapterdata, img_name, output_path = "./img")
+                plot_data(chapterdata, img_name, output_path="./img")
                 yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
                 return
         else:
