@@ -37,15 +37,15 @@ def plot_data(chapterdata, name, output_path = "./img"):
     plt.rcParams['axes.unicode_minus'] = False
     plt.rcParams['figure.dpi'] = 200
 
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(18, 8))
 
-    plt.subplot(2, 2, 1)
+    plt.subplot(3, 2, 1)
     plt.title(f"Gap Stickers Count")
     plt.xlabel('Chapter')
     plt.ylabel('Quantity')
     plt.bar(range(len(df)), df['GapStickers'])
 
-    plt.subplot(2, 2, 2)
+    plt.subplot(3, 2, 2)
     updated_times = df['updatatime'].dt.hour
     updated_dict = updated_times.value_counts().sort_index()
     plt.title(f"Update Time Points")
@@ -53,13 +53,13 @@ def plot_data(chapterdata, name, output_path = "./img"):
     plt.ylabel('Frequency')
     plt.bar(updated_dict.index, updated_dict.values)
 
-    plt.subplot(2, 2, 3)
+    plt.subplot(3, 2, 3)
     plt.title(f"Word Count")
     plt.xlabel('Chapter')
     plt.ylabel('Quantity')
     plt.bar(range(len(df)), df['words'])
 
-    plt.subplot(2, 2, 4)
+    plt.subplot(3, 2, 4)
     updated_words = df.groupby(df['updatatime'].dt.date)['words'].sum()
     updated_words.index = pd.to_datetime(updated_words.index).strftime('%Y-%m-%d')
     plt.title(f"Daily Word Count Updates")
@@ -70,16 +70,10 @@ def plot_data(chapterdata, name, output_path = "./img"):
     step = max(1, len(updated_words) // 10)
     plt.xticks(updated_words.index[::step], updated_words.index[::step], rotation=0)
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_path, f"{name}_1.png"))
-    plt.clf()
-
-    plt.figure(figsize=(8, 3))
-
     df['GapStickers'] = pd.to_numeric(df['GapStickers'], errors='coerce')
     df['GapStickers'] = df['GapStickers'].fillna(0)
 
-    plt.subplot(2, 1, 1)
+    plt.subplot(3, 2, 5)
     fig, ax = plt.subplots()
     top_min_df = df.nsmallest(10, 'GapStickers')
     plt.barh(top_min_df['title'], top_min_df['GapStickers'], color='skyblue')
@@ -87,7 +81,7 @@ def plot_data(chapterdata, name, output_path = "./img"):
     ax.set_ylabel('Chapter Name')
     ax.set_title(f'Chapters with Least Gap Stickers (Top 10)')
 
-    plt.subplot(2, 1, 2)
+    plt.subplot(3, 2, 6)
     fig, ax = plt.subplots()
     top_max_df = df.nlargest(10, 'GapStickers')
     plt.barh(top_max_df['title'], top_max_df['GapStickers'], color='skyblue')
@@ -96,7 +90,7 @@ def plot_data(chapterdata, name, output_path = "./img"):
     ax.set_title(f'Chapters with Most Gap Stickers (Top 10)')
 
     plt.tight_layout()
-    plt.savefig(os.path.join(output_path, f"{name}_2.png"))
+    plt.savefig(os.path.join(output_path, f"{name}.png"))
     plt.clf()
 
     logging.info("Charts have been generated and saved!")
@@ -383,10 +377,11 @@ class MyPlugin(Star):
         directives = params[0]
         if "help" in directives:
             yield event.plain_result("\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
+            return
         elif "jt" in directives:
             Novelid = None
             img_name = f"{Novelid}-{datetime.now().strftime('%Y-%m-%d')}"
-            yield event.plain_result(f"正在获取图像")
+            # yield event.plain_result(f"正在获取图像")
             try:
                 if len(params) == 3:
                     Novelid = int(params[1])
@@ -394,9 +389,8 @@ class MyPlugin(Star):
                 else:
                     Novelid = int(params[1])
                     n = 50
-                if os.path.exists(os.path.join(self.output_path, f"{img_name}_1.png")):
-                    yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}_1.png"))
-                    yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}_2.png"))
+                if os.path.exists(os.path.join(self.output_path, f"{img_name}.png")):
+                    yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
                     return
                 chapterdata = self.getcwm.Get_chapter_informationforn(Novelid, n)
             except Exception as e:
@@ -409,8 +403,8 @@ class MyPlugin(Star):
                 return
             else:
                 plot_data(chapterdata, img_name, output_path = "./img")
-                yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}_1.png"))
-                yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}_2.png"))
+                yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
                 return
         else:
             yield event.plain_result(f"需要指令")
+            return
