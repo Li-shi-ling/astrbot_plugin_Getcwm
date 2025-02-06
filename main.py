@@ -369,6 +369,7 @@ class MyPlugin(Star):
     @filter.command("Getcwm")
     async def Getcwm(self, event: AstrMessageEvent):
         '''一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助'''
+        logging.info("/Getcwm接收到消息")
         text = event.get_message_str()
         params = extract_help_parameters(text, "Getcwm")
         logging.info("params为:" + ",".join(params))
