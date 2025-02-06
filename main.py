@@ -357,7 +357,7 @@ class GetCwm:
                     outputdata.append([data[0], data[1], GapStickers, updatatime, int(words)])
         return outputdata
 
-@register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.0", "repo url")
+@register("getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/getcwm help查看帮助", "1.0.0", "repo url")
 class MyPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -371,12 +371,12 @@ class MyPlugin(Star):
             os.makedirs(self.output_path)
 
     # 获取cwm数据代码
-    @filter.command("Getcwm")
-    async def Getcwm(self, event: AstrMessageEvent):
-        '''一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助'''
-        logging.info("/Getcwm接收到消息")
+    @filter.command("getcwm")
+    async def getcwm(self, event: AstrMessageEvent):
+        '''一个刺猬猫小说数据获取与画图插件,/getcwm help查看帮助'''
+        logging.info("/getcwm接收到消息")
         text = event.get_message_str()
-        params = extract_help_parameters(text, "Getcwm")
+        params = extract_help_parameters(text, "getcwm")
         logging.info("params为:" + ",".join(params))
         directives = params[0]
         if "help" in directives:
