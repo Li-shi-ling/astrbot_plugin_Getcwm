@@ -27,6 +27,10 @@ def plot_data(chapterdata, name, output_path = "./img"):
 
     df = pd.DataFrame(chapterdata, columns=["chapterid", "chaptername", "GapStickers", "updatatime", "words"])
 
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    logging.info(df)
+
     df['updatatime'] = pd.to_datetime(df['updatatime'])
 
     plt.rcParams['font.sans-serif'] = ['SimHei']
@@ -71,6 +75,9 @@ def plot_data(chapterdata, name, output_path = "./img"):
     plt.clf()
 
     plt.figure(figsize=(8, 3))
+
+    df['GapStickers'] = pd.to_numeric(df['GapStickers'], errors='coerce')
+    df['GapStickers'] = df['GapStickers'].fillna(0)
 
     plt.subplot(2, 1, 1)
     fig, ax = plt.subplots()
