@@ -74,20 +74,18 @@ def plot_data(chapterdata, name, output_path = "./img"):
     df['GapStickers'] = df['GapStickers'].fillna(0)
 
     plt.subplot(3, 2, 5)
-    fig, ax = plt.subplots()
     top_min_df = df.nsmallest(10, 'GapStickers')
     plt.barh(top_min_df['chaptername'], top_min_df['GapStickers'], color='skyblue')
-    ax.set_xlabel('Gap Stickers Count')
-    ax.set_ylabel('Chapter Name')
-    ax.set_title(f'Chapters with Least Gap Stickers (Top 10)')
+    plt.xlabel('Gap Stickers Count')
+    plt.ylabel('Chapter Name')
+    plt.title(f'Chapters with Least Gap Stickers (Top 10)')
 
     plt.subplot(3, 2, 6)
-    fig, ax = plt.subplots()
     top_max_df = df.nlargest(10, 'GapStickers')
     plt.barh(top_max_df['chaptername'], top_max_df['GapStickers'], color='skyblue')
-    ax.set_xlabel('Gap Stickers Count')
-    ax.set_ylabel('Chapter Name')
-    ax.set_title(f'Chapters with Most Gap Stickers (Top 10)')
+    plt.xlabel('Gap Stickers Count')
+    plt.ylabel('Chapter Name')
+    plt.title(f'Chapters with Most Gap Stickers (Top 10)')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_path, f"{name}.png"))
@@ -379,9 +377,6 @@ class MyPlugin(Star):
             yield event.plain_result("\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
             return
         elif "jt" in directives:
-            Novelid = None
-            img_name = f"{Novelid}-{datetime.now().strftime('%Y-%m-%d')}"
-            # yield event.plain_result(f"正在获取图像")
             try:
                 if len(params) == 3:
                     Novelid = int(params[1])
@@ -389,6 +384,7 @@ class MyPlugin(Star):
                 else:
                     Novelid = int(params[1])
                     n = 50
+                img_name = f"{Novelid}-{datetime.now().strftime('%Y-%m-%d')}"
                 if os.path.exists(os.path.join(self.output_path, f"{img_name}.png")):
                     yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
                     return
