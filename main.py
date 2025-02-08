@@ -29,6 +29,7 @@ def plot_data(chapterdata, name, output_path="./img"):
     df = pd.DataFrame(chapterdata, columns=["chapterid", "chaptername", "GapStickers", "updatatime", "words"])
 
     df['updatatime'] = pd.to_datetime(df['updatatime'])
+    df['GapStickers'] = pd.to_numeric(df['GapStickers'], errors='coerce').fillna(0).astype(int)
 
     plt.rcParams['font.sans-serif'] = ['SimHei']
     plt.rcParams['axes.unicode_minus'] = False
