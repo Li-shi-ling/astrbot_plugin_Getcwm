@@ -2,7 +2,7 @@
 
 ### 书籍id获取
 
-[image](img/book_id.jpg)
+[image](https://github.com/Li-shi-ling/astrbot_plugin_Getcwm/blob/master/img/book_id.jpg)
 
 # 支持
 
