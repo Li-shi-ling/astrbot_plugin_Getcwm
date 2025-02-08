@@ -1,8 +1,8 @@
-# helloworld
+# Getcwm
 
-AstrBot 插件模板
+### 书籍id获取
 
-A template plugin for AstrBot plugin feature
+[image](img/book_id.jpg)
 
 # 支持
 
