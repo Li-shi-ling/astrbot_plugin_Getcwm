@@ -1,7 +1,8 @@
 import os
 import re
+import aiohttp
+import asyncio
 import logging
-import requests
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -91,44 +92,81 @@ def plot_data(chapterdata, name, output_path="./img"):
 
 # 刺猬猫爬虫类别
 class GetCwm:
-    # 获取最新n个章节的详细信息
-    def Get_chapter_informationforn(self, id_data, n=50):
+    def __init__(self):
+        self.base_url = "https://www.ciweimao.com"
+
+    async def fetch(self, session, url):
+        """异步获取网页内容"""
+        try:
+            async with session.get(url) as response:
+                return await response.text()
+        except Exception as e:
+            logging.error(f"请求失败: {url}, 错误: {e}")
+            return None
+
+    async def get_chapter_list(self, session, book_id, n=50):
+        """获取最新 n 章节的 ID 和名称"""
+        url = f"{self.base_url}/chapter-list/{book_id}/book_detail"
+        html = await self.fetch(session, url)
+        if not html:
+            return []
+
         datas = []
         try:
-            book_detail = requests.get(url=f"https://www.ciweimao.com/chapter-list/{id_data}/book_detail")
-            soup = BeautifulSoup(book_detail.text, 'html.parser')
+            soup = BeautifulSoup(html, 'html.parser')
             book_chapter_list = soup.find_all('ul', class_="book-chapter-list")
             for book_chapter in book_chapter_list:
                 a_list = book_chapter.find_all('a')
                 for a in a_list:
-                    datas.append(
-                        [int(a['href'].split("/")[-1]), a.text.replace("\t", "").replace("\n", "").replace("\r", "")])
-            datas.sort(key=lambda x: int(x[0]))
-            datas = datas[max(0, len(datas) - n):]
+                    datas.append([
+                        int(a['href'].split("/")[-1]),
+                        a.text.strip()
+                    ])
+            datas.sort(key=lambda x: x[0])
+            return datas[max(0, len(datas) - n):]
         except Exception as e:
-            logging.error(f"Get_chapter_informationforn报错:{e}")
+            logging.error(f"解析章节列表失败: {e}")
+            return []
 
-        outputdata = []
-        for data in datas:
-            GapStickers, updatatime, words = None, None, None
-            try:
-                chapterdata = requests.get(url=f"https://www.ciweimao.com/chapter/{data[0]}")
-                soup = BeautifulSoup(chapterdata.text, 'html.parser')
-                read_hd_div = soup.find('div', class_="read-hd")
-                GapStickers = read_hd_div.find("span", id="J_TsukkomiNum").text
-                for span in read_hd_div.find("p").find_all("span"):
-                    if "更新时间" in span.text:
-                        updatatime = span.text.split("更新时间：")[-1]
-                    if "字数" in span.text:
-                        words = span.text.split("字数：")[-1]
-            except Exception as e:
-                logging.error(f"Get_chapter_informationforn报错:{e}")
-            finally:
-                if GapStickers is None or updatatime is None or words is None:
-                    logging.error(f"写入失败:{data[0]},{data[1]},{GapStickers},{updatatime},{words}\n")
-                else:
-                    outputdata.append([data[0], data[1], GapStickers, updatatime, int(words)])
-        return outputdata
+    async def get_chapter_info(self, session, chapter_id, chapter_name):
+        """获取单个章节的详细信息"""
+        url = f"{self.base_url}/chapter/{chapter_id}"
+        html = await self.fetch(session, url)
+        if not html:
+            return None
+
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            read_hd_div = soup.find('div', class_="read-hd")
+            GapStickers = read_hd_div.find("span", id="J_TsukkomiNum").text.strip()
+
+            updatatime, words = None, None
+            for span in read_hd_div.find("p").find_all("span"):
+                if "更新时间" in span.text:
+                    updatatime = span.text.split("更新时间：")[-1].strip()
+                if "字数" in span.text:
+                    words = int(span.text.split("字数：")[-1].strip())
+
+            if GapStickers and updatatime and words:
+                return [chapter_id, chapter_name, GapStickers, updatatime, words]
+            else:
+                logging.error(f"数据缺失: {chapter_id}, {chapter_name}, {GapStickers}, {updatatime}, {words}")
+                return None
+        except Exception as e:
+            logging.error(f"解析章节信息失败: {chapter_id}, 错误: {e}")
+            return None
+
+    async def get_chapter_informationforn(self, book_id, n=50):
+        """获取最新 n 章节的详细信息"""
+        async with aiohttp.ClientSession() as session:
+            chapters = await self.get_chapter_list(session, book_id, n)
+            if not chapters:
+                return []
+
+            tasks = [self.get_chapter_info(session, cid, cname) for cid, cname in chapters]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            return [r for r in results if not isinstance(r, Exception)]
 
 @register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.0", "repo url")
 class MyPlugin(Star):
@@ -138,7 +176,7 @@ class MyPlugin(Star):
         self.output_path = "./img"
         self.help_dict = {
             "help": "查看帮助",
-            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括每章间贴数,更新时间点,章更新字数,日更新字数,间贴排行榜前10,间贴排行榜后10\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]"
+            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括间贴,更新时间点,更新字数\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]"
         }
         if not os.path.exists(self.output_path):
             os.makedirs(self.output_path)
@@ -167,18 +205,18 @@ class MyPlugin(Star):
                 if os.path.exists(os.path.join(self.output_path, f"{img_name}.png")):
                     yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
                     return
-                chapterdata = self.getcwm.Get_chapter_informationforn(Novelid, n)
+                chapterdata = await self.getcwm.get_chapter_informationforn(Novelid, n)
             except Exception as e:
                 logging.error(f"jt报错:{e}")
                 yield event.plain_result(f"jt报错:{e}")
                 return
 
-            if len(chapterdata) <= 0 or Novelid is None:
-                yield event.plain_result(f"jt获取错误")
-                return
-            else:
+            if chapterdata:
                 plot_data(chapterdata, img_name, output_path="./img")
                 yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
+                return
+            else:
+                yield event.plain_result(f"jt获取错误")
                 return
         else:
             yield event.plain_result(f"需要指令")
