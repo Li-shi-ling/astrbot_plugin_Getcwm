@@ -181,7 +181,7 @@ class GetCwm:
         if len(outputdata) == 0:
             return "未能搜到该书籍"
         else:
-            return "\n".join([
+            return "\n" + "\n".join([
                 f"{title_text}:{outputdata[title_text]}"
                 for title_text in list(outputdata)
             ])
@@ -210,7 +210,7 @@ class MyPlugin(Star):
         logging.info("params为:" + ",".join(params))
         directives = params[0]
         if "help" in directives:
-            yield event.plain_result("\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
+            yield event.plain_result("\n\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
             return
         elif "jt" in directives:
             try:
@@ -238,8 +238,11 @@ class MyPlugin(Star):
                 yield event.plain_result(f"jt获取错误")
                 return
         elif "Search" in directives:
-            novelname = params[1]
-            yield event.plain_result(await self.getcwm.get_novel_id(novelname))
+            try:
+                novelname = params[1]
+                yield event.plain_result(await self.getcwm.get_novel_id(novelname))
+            except Exception as e:
+                logging.error(f"Search获取小说信息失败,参数:{params}, 错误: {e}")
             return
         else:
             yield event.plain_result(f"需要指令")

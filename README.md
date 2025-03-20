@@ -1,8 +1,6 @@
 # Getcwm
 
-### 书籍id获取
-
-[image](https://github.com/Li-shi-ling/astrbot_plugin_Getcwm/blob/master/img/book_id.jpg)
+### 一个用于获取cwm小说信息的插件
 
 # 支持
 
