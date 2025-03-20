@@ -171,7 +171,7 @@ class GetCwm:
             return [r for r in results if not isinstance(r, Exception)]
 
     async def get_novel_id(self, book_name):
-        data = requests.get('https://www.ciweimao.com/get-search-book-list/0-0-0-0-0-0/全部/' + name + '/1').text
+        data = requests.get('https://www.ciweimao.com/get-search-book-list/0-0-0-0-0-0/全部/' + book_name + '/1').text
         book_matches = re.findall(r'<p class="tit"><a href="https://www\.ciweimao\.com/book/(\d+)"[^>]+>([^<]+)</a></p>', data)
         outputdata = {}
         if book_matches:
