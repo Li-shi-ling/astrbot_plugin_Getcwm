@@ -3,6 +3,7 @@ import re
 import aiohttp
 import asyncio
 import logging
+import requests
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -169,6 +170,22 @@ class GetCwm:
 
             return [r for r in results if not isinstance(r, Exception)]
 
+    async def get_novel_id(self, book_name):
+        data = requests.get('https://www.ciweimao.com/get-search-book-list/0-0-0-0-0-0/全部/' + name + '/1').text
+        book_matches = re.findall(r'<p class="tit"><a href="https://www\.ciweimao\.com/book/(\d+)"[^>]+>([^<]+)</a></p>', data)
+        outputdata = {}
+        if book_matches:
+            for book_id, title_text in book_matches:
+                outputdata[title_text] = book_id
+
+        if len(outputdata) == 0:
+            return "未能搜到该书籍"
+        else:
+            return "\n".join([
+                f"{title_text}:{outputdata[title_text]}"
+                for title_text in list(outputdata)
+            ])
+
 @register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.0", "repo url")
 class MyPlugin(Star):
     def __init__(self, context: Context):
@@ -177,7 +194,8 @@ class MyPlugin(Star):
         self.output_path = "./img"
         self.help_dict = {
             "help": "查看帮助",
-            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括间贴,更新时间点,更新字数\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]"
+            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括间贴,更新时间点,更新字数\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]",
+            "Search": "搜索小说id,\n使用案例: /Getcwm Search [书籍名称]"
         }
         if not os.path.exists(self.output_path):
             os.makedirs(self.output_path)
@@ -219,6 +237,10 @@ class MyPlugin(Star):
             else:
                 yield event.plain_result(f"jt获取错误")
                 return
+        elif "Search" in directives:
+            novelname = params[1]
+            yield event.plain_result(self.getcwm.get_novel_id(novelname))
+            return
         else:
             yield event.plain_result(f"需要指令")
             return
