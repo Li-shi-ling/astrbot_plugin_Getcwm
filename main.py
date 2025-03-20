@@ -186,7 +186,7 @@ class GetCwm:
                 for title_text in list(outputdata)
             ])
 
-@register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.0", "repo url")
+@register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.1", "repo url")
 class MyPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
