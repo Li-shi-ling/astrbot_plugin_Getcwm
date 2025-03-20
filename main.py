@@ -239,7 +239,7 @@ class MyPlugin(Star):
                 return
         elif "Search" in directives:
             novelname = params[1]
-            yield event.plain_result(self.getcwm.get_novel_id(novelname))
+            yield event.plain_result(await self.getcwm.get_novel_id(novelname))
             return
         else:
             yield event.plain_result(f"需要指令")
