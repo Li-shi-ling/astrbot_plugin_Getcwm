@@ -6,6 +6,7 @@ import asyncio
 import logging
 import requests
 import aiometer
+import functools
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -198,6 +199,18 @@ class GetCwm:
             logging.error(f"html: \n{html}\n" + "-" * 10)
             return None
 
+    # async def get_chapter_informationforn(self, book_id, n=50):
+    #     """获取最新 n 章节的详细信息"""
+    #     async with aiohttp.ClientSession() as session:
+    #         chapters = await self.get_chapter_list(session, book_id, n)
+    #         if not chapters:
+    #             return []
+    #
+    #         tasks = [self.get_chapter_info(session, cid, cname) for cid, cname in chapters]
+    #         results = await asyncio.gather(*tasks, return_exceptions=True)
+    #
+    #         return [r for r in results if not isinstance(r, Exception)]
+
     async def get_chapter_informationforn(self, book_id, n=50):
         """获取最新 n 章节的详细信息，使用aiometer控制并发"""
         async with aiohttp.ClientSession(headers=self.headers) as session:
@@ -208,7 +221,7 @@ class GetCwm:
             # 使用aiometer控制并发
             try:
                 results = await aiometer.run_all(
-                    [lambda: self.get_chapter_info(session, cid, cname) for cid, cname in chapters],
+                    [functools.partial(self.get_chapter_info, session, cid, cname) for cid, cname in chapters],
                     max_at_once=5,  # 最大并发数
                     max_per_second=2  # 每秒最大请求数
                 )
