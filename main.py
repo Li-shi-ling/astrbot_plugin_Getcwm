@@ -156,6 +156,8 @@ class GetCwm:
                 return None
         except Exception as e:
             logging.error(f"解析章节信息失败: {chapter_id}, 错误: {e}")
+            logging.error(f"url: {url}\n" + "-" * 10)
+            logging.error(f"html: \n{html}\n" + "-" * 10)
             return None
 
     async def get_chapter_informationforn(self, book_id, n=50):
