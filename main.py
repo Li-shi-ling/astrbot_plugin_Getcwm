@@ -5,8 +5,8 @@ import aiohttp
 import asyncio
 import logging
 import requests
+import aiometer
 import pandas as pd
-from aiometer import run_all
 from datetime import datetime
 from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
@@ -207,8 +207,8 @@ class GetCwm:
 
             # 使用aiometer控制并发
             try:
-                results = await run_all(
-                    [self.get_chapter_info(session, cid, cname) for cid, cname in chapters],
+                results = await aiometer.run_all(
+                    [lambda: self.get_chapter_info(session, cid, cname) for cid, cname in chapters],
                     max_at_once=5,  # 最大并发数
                     max_per_second=2  # 每秒最大请求数
                 )
