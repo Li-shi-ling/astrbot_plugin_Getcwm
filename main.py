@@ -1,3 +1,6 @@
+# pip install matplotlib
+# pip install aiometer
+
 import os
 import re
 import random
@@ -5,6 +8,7 @@ import aiohttp
 import asyncio
 import logging
 import requests
+import platform
 import aiometer
 import functools
 import pandas as pd
@@ -15,6 +19,42 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+def set_chinese_font():
+    system = platform.system()
+
+    # 常见中文字体列表（按优先级）
+    font_candidates = {
+        "Windows": ["SimHei", "Microsoft YaHei"],
+        "Darwin": ["PingFang SC", "Heiti SC"],
+        "Linux": ["Noto Sans CJK SC", "WenQuanYi Zen Hei"]
+    }
+
+    fonts = font_candidates.get(system, [])
+
+    # 检查系统中是否存在字体
+    available_fonts = set(f.name for f in fm.fontManager.ttflist)
+
+    for font in fonts:
+        if font in available_fonts:
+            # 找到可用字体
+            logging.info(f"使用中文字体: {font}")
+            plt.rcParams['font.sans-serif'] = [font]
+            return
+
+    # 如果没找到可用字体 → 打印安装提示
+    logging.warning("系统未找到可用中文字体，请手动安装。")
+
+    if system == "Linux":
+        logging.warning("❌ 未找到中文字体，可执行以下命令安装：")
+        logging.warning("sudo apt install fonts-noto-cjk   # Debian/Ubuntu")
+        logging.warning("sudo yum install google-noto-sans-cjk-fonts   # CentOS/RHEL")
+    elif system == "Darwin":
+        logging.warning("❌ macOS 可安装中文字体：")
+        logging.warning("brew install --cask font-noto-sans-cjk")
+    elif system == "Windows":
+        logging.warning("❌ Windows 请安装黑体 SimHei.ttf 或 微软雅黑 MSYH.ttf")
+        logging.warning("可从网上下载字体并安装。")
 
 # 获取指令后面的参数
 def extract_help_parameters(s, directives):
