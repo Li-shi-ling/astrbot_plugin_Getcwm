@@ -299,33 +299,42 @@ class GetcwmPlugin(Star):
         text = event.message_str
         params = text.split()
         if len(params) <= 1:
-            return event.plain_result("请输入子命令，如：/Getcwm help")
+            yield event.plain_result("请输入子命令，如：/Getcwm help")
+            return
         cmd = params[1]
         # ===== help =====
         if cmd == "help":
             help_text = "\n\n".join([f"{k}: {v}" for k, v in self.help_dict.items()])
-            return event.plain_result(help_text)
+            yield event.plain_result(help_text)
+            return
         # ===== jt =====
         elif cmd == "jt":
             try:
                 novel_id = int(params[2])
                 n = int(params[3]) if len(params) >= 4 else 50
             except:
-                return event.plain_result("格式错误，示例：/Getcwm jt 12345 50")
+                yield event.plain_result("格式错误，示例：/Getcwm jt 12345 50")
+                return
             img_name = f"{novel_id}"
             chapterdata = await self.getcwm.get_chapter_informationforn(novel_id, n)
             if not chapterdata:
-                return event.plain_result("未能获取章节数据")
-            plot_data(chapterdata, img_name)
-            return event.plain_result("图像生成成功（示例代码）")
+                yield event.plain_result("未能获取章节数据")
+                return
+            plot_data(chapterdata, img_name, output_path="./img")
+            yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
+            return
         # ===== Search =====
         elif cmd == "Search":
             if len(params) < 3:
-                return event.plain_result("格式错误：/Getcwm Search 书名")
+                yield event.plain_result("格式错误：/Getcwm Search 书名")
+                return
             book_name = params[2]
             result = await self.getcwm.get_novel_id(book_name)
-            return event.plain_result(result)
+            yield event.plain_result(result)
+            return
         else:
-            return event.plain_result("未知指令，请使用 /Getcwm help 查看帮助")
+            yield event.plain_result("未知指令，请使用 /Getcwm help 查看帮助")
+            return
+
     async def terminate(self):
         logger.info("Getcwm 插件已卸载")
