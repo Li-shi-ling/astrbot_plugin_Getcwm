@@ -315,12 +315,15 @@ class GetcwmPlugin(Star):
             except:
                 yield event.plain_result("格式错误，示例：/Getcwm jt 12345 50")
                 return
-            img_name = f"{novel_id}"
+            img_name = f"{novel_id}-{datetime.now().strftime('%Y-%m-%d')}"
+            if os.path.exists(os.path.join(self.output_path,img_name)):
+                yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
+                return
             chapterdata = await self.getcwm.get_chapter_informationforn(novel_id, n)
             if not chapterdata:
                 yield event.plain_result("未能获取章节数据")
                 return
-            plot_data(chapterdata, img_name, output_path="./img")
+            plot_data(chapterdata, img_name, output_path=self.output_path)
             yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
             return
         # ===== Search =====
