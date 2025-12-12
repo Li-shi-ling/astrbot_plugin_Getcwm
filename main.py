@@ -16,8 +16,10 @@ from bs4 import BeautifulSoup
 from astrbot.api import logger
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api import logger
+
 
 # 获取指令后面的参数
 def extract_help_parameters(s, directives):
@@ -275,67 +277,55 @@ class GetCwm:
                 for title_text in list(outputdata)
             ])
 
-@register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.5")
-class MyPlugin(Star):
+@register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件 /Getcwm help 查看帮助", "2.0.0")
+class GetcwmPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.getcwm = GetCwm()
         self.output_path = "./img"
+
         self.help_dict = {
             "help": "查看帮助",
-            "jt": "即时爬取cwm小说数据并使用对应数据进行画图包括间贴,更新时间点,更新字数\n使用案例: /Getcwm jt [书籍id] [读取条数n(可选择,默认为50)]",
-            "Search": "搜索小说id,\n使用案例: /Getcwm Search [书籍名称]"
+            "jt": "即时爬取数据并画图：/Getcwm jt [书籍id] [条数=50]",
+            "Search": "搜索小说 ID：/Getcwm Search [书名]"
         }
-        if not os.path.exists(self.output_path):
-            os.makedirs(self.output_path)
 
-    # 插件卸载/重载时调用，清理资源
-    async def terminate(self):
-        logger.info("正在停止论文推送插件定时任务...")
+    async def initialize(self):
+        logger.info("Getcwm 插件初始化完成")
 
-    # 一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助
     @filter.command("Getcwm")
-    async def Getcwm(self, event: AstrMessageEvent, bot):
-        logger.info("/Getcwm接收到消息")
-        text = event.get_message_str()
-        params = extract_help_parameters(text, "Getcwm")
-        logger.info("params为:" + ",".join(params))
-        directives = params[0]
-        if "help" in directives:
-            yield event.plain_result("\n\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
-            return
-        elif "jt" in directives:
+    async def getcwm_cmd(self, event: AstrMessageEvent):
+        """Getcwm 指令处理函数"""
+        text = event.message_str
+        params = text.split()
+        if len(params) <= 1:
+            return event.plain_result("请输入子命令，如：/Getcwm help")
+        cmd = params[1]
+        # ===== help =====
+        if cmd == "help":
+            help_text = "\n\n".join([f"{k}: {v}" for k, v in self.help_dict.items()])
+            return event.plain_result(help_text)
+        # ===== jt =====
+        elif cmd == "jt":
             try:
-                if len(params) == 3:
-                    Novelid = int(params[1])
-                    n = int(params[2])
-                else:
-                    Novelid = int(params[1])
-                    n = 50
-                img_name = f"{Novelid}-{datetime.now().strftime('%Y-%m-%d')}"
-                if os.path.exists(os.path.join(self.output_path, f"{img_name}.png")):
-                    yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
-                    return
-                chapterdata = await self.getcwm.get_chapter_informationforn(Novelid, n)
-            except Exception as e:
-                logger.error(f"jt报错:{e}")
-                yield event.plain_result(f"jt报错:{e}")
-                return
-
-            if chapterdata:
-                plot_data(chapterdata, img_name, output_path="./img")
-                yield event.make_result().file_image(os.path.join(self.output_path, f"{img_name}.png"))
-                return
-            else:
-                yield event.plain_result(f"jt获取错误")
-                return
-        elif "Search" in directives:
-            try:
-                novelname = params[1]
-                yield event.plain_result(await self.getcwm.get_novel_id(novelname))
-            except Exception as e:
-                logger.error(f"Search获取小说信息失败,参数:{params}, 错误: {e}")
-            return
+                novel_id = int(params[2])
+                n = int(params[3]) if len(params) >= 4 else 50
+            except:
+                return event.plain_result("格式错误，示例：/Getcwm jt 12345 50")
+            img_name = f"{novel_id}"
+            chapterdata = await self.getcwm.get_chapter_informationforn(novel_id, n)
+            if not chapterdata:
+                return event.plain_result("未能获取章节数据")
+            plot_data(chapterdata, img_name)
+            return event.plain_result("图像生成成功（示例代码）")
+        # ===== Search =====
+        elif cmd == "Search":
+            if len(params) < 3:
+                return event.plain_result("格式错误：/Getcwm Search 书名")
+            book_name = params[2]
+            result = await self.getcwm.get_novel_id(book_name)
+            return event.plain_result(result)
         else:
-            yield event.plain_result(f"需要指令")
-            return
+            return event.plain_result("未知指令，请使用 /Getcwm help 查看帮助")
+    async def terminate(self):
+        logger.info("Getcwm 插件已卸载")
