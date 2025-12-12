@@ -13,11 +13,11 @@ import functools
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
+from astrbot.api import logger
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
-from astrbot.api import logger
-from astrbot.api.star import Context, register, Star
-from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter, MessageChain
+from astrbot.api.star import Context, Star, register
+from astrbot.api.event import AstrMessageEvent, filter
 
 # 获取指令后面的参数
 def extract_help_parameters(s, directives):
@@ -275,7 +275,7 @@ class GetCwm:
                 for title_text in list(outputdata)
             ])
 
-# @register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.3")
+@register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.5")
 class MyPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
