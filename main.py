@@ -15,6 +15,7 @@ import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from astrbot.api.star import Context, Star, register
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 
@@ -75,7 +76,7 @@ def plot_data(chapterdata, name, output_path="./img"):
     df['updatatime'] = pd.to_datetime(df['updatatime'])
     df['GapStickers'] = pd.to_numeric(df['GapStickers'], errors='coerce').fillna(0).astype(int)
 
-    plt.rcParams['font.sans-serif'] = ['SimHei']
+    set_chinese_font()
     plt.rcParams['axes.unicode_minus'] = False
     plt.rcParams['figure.dpi'] = 200
 
