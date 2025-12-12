@@ -6,7 +6,6 @@ import re
 import random
 import aiohttp
 import asyncio
-import logging
 import requests
 import platform
 import aiometer
@@ -16,11 +15,20 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
-from astrbot.api.star import Context, Star, register
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api import logger
+from astrbot.api.star import Context, register, Star
+from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter, MessageChain
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# 获取指令后面的参数
+def extract_help_parameters(s, directives):
+    escaped_directives = re.escape(directives)
+    match = re.search(f'{escaped_directives}' + r'\s+(.*)', s)
+    if match:
+        params = re.split(r'\s+', match.group(1).strip())  # 使用 \s+ 来处理多个空格
+        return params
+    return []
 
+# 设置各个系统的中文文字
 def set_chinese_font():
     system = platform.system()
 
@@ -39,33 +47,24 @@ def set_chinese_font():
     for font in fonts:
         if font in available_fonts:
             # 找到可用字体
-            logging.info(f"使用中文字体: {font}")
+            logger.info(f"使用中文字体: {font}")
             plt.rcParams['font.sans-serif'] = [font]
             return
 
     # 如果没找到可用字体 → 打印安装提示
-    logging.warning("系统未找到可用中文字体，请手动安装。")
+    logger.warning("系统未找到可用中文字体，请手动安装。")
 
     if system == "Linux":
-        logging.warning("❌ 未找到中文字体，可执行以下命令安装：")
-        logging.warning("sudo apt install fonts-noto-cjk   # Debian/Ubuntu")
-        logging.warning("sudo yum install google-noto-sans-cjk-fonts   # CentOS/RHEL")
+        logger.warning("❌ 未找到中文字体，可执行以下命令安装：")
+        logger.warning("sudo apt install fonts-noto-cjk   # Debian/Ubuntu")
+        logger.warning("sudo yum install google-noto-sans-cjk-fonts   # CentOS/RHEL")
     elif system == "Darwin":
-        logging.warning("❌ macOS 可安装中文字体：")
-        logging.warning("brew install --cask font-noto-sans-cjk")
+        logger.warning("❌ macOS 可安装中文字体：")
+        logger.warning("brew install --cask font-noto-sans-cjk")
     elif system == "Windows":
-        logging.warning("❌ Windows 请安装黑体 SimHei.ttf 或 微软雅黑 MSYH.ttf")
-        logging.warning("可从网上下载字体并安装。")
-
-# 获取指令后面的参数
-def extract_help_parameters(s, directives):
-    escaped_directives = re.escape(directives)
-    match = re.search(f'{escaped_directives}' + r'\s+(.*)', s)
-    if match:
-        params = re.split(r'\s+', match.group(1).strip())  # 使用 \s+ 来处理多个空格
-        return params
-    return []
-
+        logger.warning("❌ Windows 请安装黑体 SimHei.ttf 或 微软雅黑 MSYH.ttf")
+        logger.warning("可从网上下载字体并安装。")
+        
 # 绘画
 def plot_data(chapterdata, name, output_path="./img"):
     if not os.path.exists(output_path):
@@ -134,7 +133,7 @@ def plot_data(chapterdata, name, output_path="./img"):
     plt.savefig(os.path.join(output_path, f"{name}.png"))
     plt.clf()
 
-    logging.info("Charts have been generated and saved!")
+    logger.info("Charts have been generated and saved!")
 
 # 刺猬猫爬虫类别
 class GetCwm:
@@ -153,8 +152,8 @@ class GetCwm:
         self.retry_times = 3  # 重试次数
         self.delay = 2  # 请求延迟(秒)
 
+    # 异步获取网页内容
     async def fetch(self, session, url):
-        """异步获取网页内容，添加重试机制"""
         for attempt in range(self.retry_times):
             try:
                 self.delay = random.uniform(1, 3)
@@ -169,7 +168,7 @@ class GetCwm:
                     if response.status == 503:
                         # 如果遇到503，等待更长时间后重试
                         wait_time = (attempt + 1) * 5  # 等待时间递增
-                        logging.warning(f"遇到503错误，等待{wait_time}秒后重试(第{attempt + 1}次)")
+                        logger.warning(f"遇到503错误，等待{wait_time}秒后重试(第{attempt + 1}次)")
                         await asyncio.sleep(wait_time)
                         continue
 
@@ -177,17 +176,17 @@ class GetCwm:
                     return await response.text()
 
             except aiohttp.ClientError as e:
-                logging.error(f"请求失败(第{attempt + 1}次): {url}, 错误: {e}")
+                logger.error(f"请求失败(第{attempt + 1}次): {url}, 错误: {e}")
                 if attempt == self.retry_times - 1:  # 最后一次尝试也失败
                     return None
                 await asyncio.sleep(5)  # 等待5秒后重试
             except Exception as e:
-                logging.error(f"未知错误: {url}, 错误: {e}")
+                logger.error(f"未知错误: {url}, 错误: {e}")
                 return None
         return None
 
+    # 获取最新 n 章节的 ID 和名称
     async def get_chapter_list(self, session, book_id, n=50):
-        """获取最新 n 章节的 ID 和名称"""
         url = f"{self.base_url}/chapter-list/{book_id}/book_detail"
         html = await self.fetch(session, url)
         if not html:
@@ -207,11 +206,11 @@ class GetCwm:
             datas.sort(key=lambda x: x[0])
             return datas[max(0, len(datas) - n):]
         except Exception as e:
-            logging.error(f"解析章节列表失败: {e}")
+            logger.error(f"解析章节列表失败: {e}")
             return []
 
+    # 获取单个章节的详细信息
     async def get_chapter_info(self, session, chapter_id, chapter_name):
-        """获取单个章节的详细信息"""
         url = f"{self.base_url}/chapter/{chapter_id}"
         html = await self.fetch(session, url)
         if not html:
@@ -232,28 +231,16 @@ class GetCwm:
             if GapStickers and updatatime and words:
                 return [chapter_id, chapter_name, GapStickers, updatatime, words]
             else:
-                logging.error(f"数据缺失: {chapter_id}, {chapter_name}, {GapStickers}, {updatatime}, {words}")
+                logger.error(f"数据缺失: {chapter_id}, {chapter_name}, {GapStickers}, {updatatime}, {words}")
                 return None
         except Exception as e:
-            logging.error(f"解析章节信息失败: {chapter_id}, 错误: {e}")
-            logging.error(f"url: {url}\n" + "-" * 10)
-            logging.error(f"html: \n{html}\n" + "-" * 10)
+            logger.error(f"解析章节信息失败: {chapter_id}, 错误: {e}")
+            logger.error(f"url: {url}\n" + "-" * 10)
+            logger.error(f"html: \n{html}\n" + "-" * 10)
             return None
 
-    # async def get_chapter_informationforn(self, book_id, n=50):
-    #     """获取最新 n 章节的详细信息"""
-    #     async with aiohttp.ClientSession() as session:
-    #         chapters = await self.get_chapter_list(session, book_id, n)
-    #         if not chapters:
-    #             return []
-    #
-    #         tasks = [self.get_chapter_info(session, cid, cname) for cid, cname in chapters]
-    #         results = await asyncio.gather(*tasks, return_exceptions=True)
-    #
-    #         return [r for r in results if not isinstance(r, Exception)]
-
+    # 获取最新 n 章节的详细信息，使用aiometer控制并发
     async def get_chapter_informationforn(self, book_id, n=50):
-        """获取最新 n 章节的详细信息，使用aiometer控制并发"""
         async with aiohttp.ClientSession(headers=self.headers) as session:
             chapters = await self.get_chapter_list(session, book_id, n)
             if not chapters:
@@ -268,9 +255,10 @@ class GetCwm:
                 )
                 return [r for r in results if r is not None and not isinstance(r, Exception)]
             except Exception as e:
-                logging.error(f"获取章节信息时出错: {e}")
+                logger.error(f"获取章节信息时出错: {e}")
                 return []
 
+    # 根据名称搜索书
     async def get_novel_id(self, book_name):
         data = requests.get('https://www.ciweimao.com/get-search-book-list/0-0-0-0-0-0/全部/' + book_name + '/1').text
         book_matches = re.findall(r'<p class="tit"><a href="https://www\.ciweimao\.com/book/(\d+)"[^>]+>([^<]+)</a></p>', data)
@@ -287,7 +275,7 @@ class GetCwm:
                 for title_text in list(outputdata)
             ])
 
-@register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.1", "repo url")
+# @register("Getcwm", "lishining", "一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助", "1.0.3")
 class MyPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -301,14 +289,17 @@ class MyPlugin(Star):
         if not os.path.exists(self.output_path):
             os.makedirs(self.output_path)
 
-    # 获取cwm数据代码
+    # 插件卸载/重载时调用，清理资源
+    async def terminate(self):
+        logger.info("正在停止论文推送插件定时任务...")
+
+    # 一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助
     @filter.command("Getcwm")
-    async def Getcwm(self, event: AstrMessageEvent):
-        '''一个刺猬猫小说数据获取与画图插件,/Getcwm help查看帮助'''
-        logging.info("/Getcwm接收到消息")
+    async def Getcwm(self, event: AstrMessageEvent, bot):
+        logger.info("/Getcwm接收到消息")
         text = event.get_message_str()
         params = extract_help_parameters(text, "Getcwm")
-        logging.info("params为:" + ",".join(params))
+        logger.info("params为:" + ",".join(params))
         directives = params[0]
         if "help" in directives:
             yield event.plain_result("\n\n".join([f"{name}:{self.help_dict[name]}" for name in list(self.help_dict)]))
@@ -327,7 +318,7 @@ class MyPlugin(Star):
                     return
                 chapterdata = await self.getcwm.get_chapter_informationforn(Novelid, n)
             except Exception as e:
-                logging.error(f"jt报错:{e}")
+                logger.error(f"jt报错:{e}")
                 yield event.plain_result(f"jt报错:{e}")
                 return
 
@@ -343,7 +334,7 @@ class MyPlugin(Star):
                 novelname = params[1]
                 yield event.plain_result(await self.getcwm.get_novel_id(novelname))
             except Exception as e:
-                logging.error(f"Search获取小说信息失败,参数:{params}, 错误: {e}")
+                logger.error(f"Search获取小说信息失败,参数:{params}, 错误: {e}")
             return
         else:
             yield event.plain_result(f"需要指令")
