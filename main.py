@@ -34,3 +34,8 @@ class GetcwmPlugin(Star):
         """/cwm 搜索 [书名]，搜索和这个名称相关的书籍"""
         result = await self.getcwm.get_novel_id(book_name)
         yield event.plain_result(result)
+
+    @cwm.command("详情")
+    async def details(self, event: AstrMessageEvent, book_id:int):
+        """/cwm 详情 [书的id]，获取这个书的详细信息"""
+        pass
