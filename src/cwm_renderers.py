@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -9,15 +10,70 @@ from html2image import Html2Image
 
 from cwm_utils import fetch_image_data_uri, format_ts_cn, html_escape, line_clamp_css
 
+def _calc_search_card_height(num_items: int) -> int:
+    """根据当前 CSS 估算搜索卡片所需画布高度，避免底部被裁切。"""
+    n = max(1, int(num_items))
+
+    body_pad_y = 26 * 2
+    card_pad_y = 22 + 18
+
+    header_h = 64
+    header_mb = 14
+
+    item_h = 140
+    list_gap = 12
+    list_h = n * item_h + max(0, n - 1) * list_gap
+
+    footer_mt = 10
+    footer_h = 16
+
+    # 预留一些冗余，避免不同字体/渲染差异导致裁切
+    safety = 80
+    return body_pad_y + card_pad_y + header_h + header_mb + list_h + footer_mt + footer_h + safety
+
+def _calc_book_details_card_height(num_tags: int, num_props: int) -> int:
+    """根据当前 CSS 估算详情卡片所需画布高度，避免信息块被裁切。"""
+    tags = max(0, int(num_tags))
+    props = max(0, int(num_props))
+
+    # 画布结构：body padding + card padding + (top + main + margin)
+    body_pad_y = 26 * 2
+    card_pad_y = 22 * 2
+    top_h = 20
+    main_mt = 14
+
+    # main 的高度需要覆盖右侧信息列的总高度（否则 card overflow:hidden 会裁切）
+    title_h = 82  # 2 行标题（34px * 1.18）
+    author_h = 26  # 8px margin + 1 行作者
+
+    # tags：右侧列宽约 690px，标签 max-width 180px，保守估算每行 3 个
+    tag_rows = math.ceil(min(tags, 10) / 3) if tags else 0
+    tags_h = 10 + (tag_rows * 27) + max(0, tag_rows - 1) * 8  # margin-top + rows + gap
+
+    stats_h = 82  # margin-top + 统计块高度
+    chapter_h = 96  # margin-top + 章节块高度（2 行）
+
+    prop_rows = math.ceil(min(props, 8) / 2) if props else 0
+    props_h = 12 + (prop_rows * 58) + max(0, prop_rows - 1) * 10  # margin-top + rows + gap
+
+    intro_h = 124  # 简介块（4 行）高度上限
+
+    right_h = title_h + author_h + tags_h + stats_h + chapter_h + props_h + intro_h
+    cover_h = 312
+    main_h = max(cover_h, right_h)
+
+    # 预留一些冗余，避免不同字体/渲染差异导致裁切
+    safety = 100
+    return body_pad_y + card_pad_y + top_h + main_mt + main_h + safety
 
 def _render_html_to_png(*, html_str: str, size: tuple[int, int], output_dir: Path, filename: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     hti = Html2Image(
         output_path=str(output_dir),
-        custom_flags=[
-            "--hide-scrollbars",
-            "--force-device-scale-factor=2",
-        ],
+        # custom_flags=[
+        #     "--hide-scrollbars",
+        #     "--force-device-scale-factor=2",
+        # ],
     )
     try:
         hti.screenshot(html_str=html_str, save_as=filename, size=size)
@@ -37,10 +93,7 @@ def render_search_card(
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     width = 1024
-    row_h = 118
-    header_h = 170
-    footer_h = 30
-    height = header_h + len(items) * row_h + footer_h
+    height = _calc_search_card_height(len(items))
 
     query_badge = f"<div class='badge'>{html_escape(query)}</div>" if query else ""
 
@@ -261,7 +314,8 @@ def render_book_details_card(
         ]
     )
 
-    width, height = 1024, 640
+    width = 1024
+    height = _calc_book_details_card_height(min(len(tag_list), 10), len(prop_items))
 
     html_str = f"""<!doctype html>
 <html lang="zh-CN">
@@ -323,7 +377,6 @@ def render_book_details_card(
       grid-template-columns: 220px 1fr;
       gap: 18px;
       margin-top: 14px;
-      height: calc(100% - 34px);
       position: relative;
       z-index: 1;
     }}
@@ -426,7 +479,7 @@ def render_book_details_card(
     .kv .k {{ font-size: 12px; opacity: 0.78; {line_clamp_css(1)} }}
     .kv .v {{ margin-top: 5px; font-size: 14px; font-weight: 900; {line_clamp_css(1)} }}
     .intro {{
-      margin-top: auto;
+      margin-top: 12px;
       border-radius: 18px;
       padding: 12px 14px;
       background: rgba(0,0,0,0.22);
@@ -486,4 +539,3 @@ def render_book_details_card(
     filename = f"book_{uuid.uuid4().hex}.png"
     out_path = _render_html_to_png(html_str=html_str, size=(width, height), output_dir=Path(output_dir), filename=filename)
     return str(out_path)
-
