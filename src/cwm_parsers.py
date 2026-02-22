@@ -5,7 +5,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from cwm_utils import cn_number_to_float, extract_chapter_info, safe_text
+from .cwm_utils import cn_number_to_float, extract_chapter_info, safe_text
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def parse_search_html_content(html_content: str) -> list[dict[str, str]]:
         )
 
     # 统一 read_url（避免相对路径）
-    from cwm_utils import abspath_url
+    from .cwm_utils import abspath_url
 
     for r in results:
         r["read_url"] = abspath_url(r.get("read_url", "")) or "未知链接"
@@ -134,4 +134,3 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
         "data": data,
         "data2": data2,
     }
-

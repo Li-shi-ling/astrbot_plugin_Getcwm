@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 
 import requests
 
-from cwm_constants import BASE_URL, DEFAULT_HEADERS, DEFAULT_TIMEOUT_S
+from .cwm_constants import BASE_URL, DEFAULT_HEADERS, DEFAULT_TIMEOUT_S
 
 try:
     from zoneinfo import ZoneInfo  # py3.9+
@@ -133,4 +133,3 @@ def format_ts_cn(ts: int) -> str:
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return "未知时间"
-

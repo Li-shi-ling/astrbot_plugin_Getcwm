@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from cwm_parsers import parse_book_details_html_content, parse_search_html_content
-from cwm_renderers import render_book_details_card, render_search_card
-from cwm_types import CardRenderResult
+from .cwm_parsers import parse_book_details_html_content, parse_search_html_content
+from .cwm_renderers import render_book_details_card, render_search_card
+from .cwm_types import CardRenderResult
 
 
 def handle_search_html_content(
@@ -40,4 +40,3 @@ def handle_book_details_html_content(
     data = parse_book_details_html_content(html_content) or {}
     image_path = render_book_details_card(data, output_dir=output_dir, session=session)
     return CardRenderResult(image_path=image_path, data=data) if return_data else image_path
-

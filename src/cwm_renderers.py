@@ -6,9 +6,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-from html2image import Html2Image
+try:
+    from html2image import Html2Image  # type: ignore
+except Exception as e:  # pragma: no cover
+    Html2Image = None  # type: ignore[assignment]
+    _HTML2IMAGE_IMPORT_ERROR = e
 
-from cwm_utils import fetch_image_data_uri, format_ts_cn, html_escape, line_clamp_css
+from .cwm_utils import fetch_image_data_uri, format_ts_cn, html_escape, line_clamp_css
 
 def _calc_search_card_height(num_items: int) -> int:
     """根据当前 CSS 估算搜索卡片所需画布高度，避免底部被裁切。"""
@@ -68,6 +72,9 @@ def _calc_book_details_card_height(num_tags: int, num_props: int) -> int:
 
 def _render_html_to_png(*, html_str: str, size: tuple[int, int], output_dir: Path, filename: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
+    if Html2Image is None:  # pragma: no cover
+        err = globals().get("_HTML2IMAGE_IMPORT_ERROR")
+        raise RuntimeError(f"缺少依赖 html2image，无法渲染图片：{err!s}")
     hti = Html2Image(
         output_path=str(output_dir),
     )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import requests
 
-from cwm_constants import BASE_URL, DEFAULT_HEADERS, DEFAULT_TIMEOUT_S
+from .cwm_constants import BASE_URL, DEFAULT_HEADERS, DEFAULT_TIMEOUT_S
 
 
 class CiweimaoClient:
@@ -22,4 +22,3 @@ class CiweimaoClient:
         resp = self.session.get(url, timeout=self.timeout_s)
         resp.raise_for_status()
         return resp.text
-
