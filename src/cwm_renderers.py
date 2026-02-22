@@ -70,10 +70,11 @@ def _render_html_to_png(*, html_str: str, size: tuple[int, int], output_dir: Pat
     output_dir.mkdir(parents=True, exist_ok=True)
     hti = Html2Image(
         output_path=str(output_dir),
-        # custom_flags=[
-        #     "--hide-scrollbars",
-        #     "--force-device-scale-factor=2",
-        # ],
+        custom_flags=[
+            "--hide-scrollbars",
+            "--force-device-scale-factor=2",
+            f"--window-size={size[0]},{size[1]}"
+        ],
     )
     try:
         hti.screenshot(html_str=html_str, save_as=filename, size=size)
