@@ -70,11 +70,6 @@ def _render_html_to_png(*, html_str: str, size: tuple[int, int], output_dir: Pat
     output_dir.mkdir(parents=True, exist_ok=True)
     hti = Html2Image(
         output_path=str(output_dir),
-        custom_flags=[
-            "--hide-scrollbars",
-            "--force-device-scale-factor=2",
-            f"--window-size={size[0]},{size[1]}"
-        ],
     )
     try:
         hti.screenshot(html_str=html_str, save_as=filename, size=size)
@@ -128,7 +123,7 @@ def render_search_card(
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     * {{ box-sizing: border-box; }}
-    html, body {{ width: {width}px; height: {height}px; margin: 0; padding: 0; }}
+    html, body {{ width: 100%; height: 100%; margin: 0; padding: 0; }}
     body {{
       font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
       background:
@@ -325,7 +320,7 @@ def render_book_details_card(
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     * {{ box-sizing: border-box; }}
-    html, body {{ width: {width}px; height: {height}px; margin: 0; padding: 0; }}
+    html, body {{ width: 100%; height: 100%; margin: 0; padding: 0; }}
     body {{
       font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
       background:
