@@ -5,10 +5,9 @@ import functools
 from pathlib import Path
 from datetime import datetime
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
-from .src.Getcwm import GetCwm
 from .src.cwm_client import CiweimaoClient
 from .src.cwm_parsers import parse_book_details_html_content, parse_search_html_content
 from .src.cwm_renderers import render_book_details_card, render_search_card
@@ -20,9 +19,8 @@ from .src.tool import extract_help_parameters, set_chinese_font, plot_data
 class GetcwmPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.getcwm = GetCwm()
         self._cwm_client = CiweimaoClient()
-        self._render_dir = Path(__file__).resolve().parent / "renders"
+        self._render_dir = str(StarTools.get_data_dir() / "renders")
         self._max_search_items = 8
 
     async def initialize(self):
