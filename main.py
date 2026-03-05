@@ -6,21 +6,23 @@ from pathlib import Path
 from datetime import datetime
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
-from astrbot.api import logger
 import astrbot.api.message_components as Comp
 from .src.cwm_client import CiweimaoClient
 from .src.cwm_parsers import parse_book_details_html_content, parse_search_html_content
 from .src.cwm_renderers import render_book_details_card, render_search_card
 from .src.cwm_utils import format_ts_cn
-from .src.tool import extract_help_parameters, set_chinese_font, plot_data
+from astrbot.api import AstrBotConfig, logger
 
 @register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件", "3.0.0")
 class GetcwmPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self._cwm_client = CiweimaoClient()
         self._render_dir = str(StarTools.get_data_dir() / "renders")
         self._max_search_items = 8
+        self.interval_time = config.get("interval_time", 20)
+        self.b2u = {}
+        self.u2b = {}
 
     async def initialize(self):
         logger.info("Getcwm 插件初始化完成")
@@ -107,9 +109,30 @@ class GetcwmPlugin(Star):
 
     @cwm.command("详情")
     async def details(self, event: AstrMessageEvent, book_id:int):
-        """/cwm 详情 [书的id]，获取小说名片（同 /cwm 名片）"""
+        """/cwm 详情 [书id]，获取小说名片（同 /cwm 名片）"""
         async for result in self.novel_card(event, book_id):
             yield result
+
+    @cwm.command("订阅")
+    async def subscribe(self, event: AstrMessageEvent, book_id:int):
+        """/cwm 订阅 [书id],在当前会话订阅id对应的书"""
+        async for result in self.novel_card(event, book_id):
+            yield result
+
+    async def _subscribe(self, event: AstrMessageEvent, book_id:int):
+        if not event.platform_meta.support_proactive_message:
+            yield event.plain_result("该适配器不具有主动发送消息的能力,无法进行订阅")
+            return
+
+        if self.b2u.get(book_id, None) is None:
+            self.b2u[book_id] = [event.unified_msg_origin]
+        else:
+            self.b2u[book_id].append(event.unified_msg_origin)
+
+        if self.u2b.get(book_id, None) is None:
+            self.u2b[event.unified_msg_origin] = [book_id]
+        else:
+            self.b2u[event.unified_msg_origin].append(book_id)
 
     async def _run_sync(self, func, /, *args, **kwargs):
         loop = asyncio.get_running_loop()
