@@ -12,6 +12,8 @@ from .src.cwm_parsers import parse_book_details_html_content, parse_search_html_
 from .src.cwm_renderers import render_book_details_card, render_search_card
 from .src.cwm_utils import format_ts_cn
 from astrbot.api import AstrBotConfig, logger
+import aiofiles
+import json
 
 @register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件", "3.0.0")
 class GetcwmPlugin(Star):
@@ -21,12 +23,11 @@ class GetcwmPlugin(Star):
         self._render_dir = str(StarTools.get_data_dir() / "renders")
         self._max_search_items = 8
         self.interval_time = config.get("interval_time", 20)
+        self.subscribe_data_file = str(StarTools.get_data_dir() / "subscribe.json")
         self.b2u = {}
         self.u2b = {}
 
-    async def initialize(self):
-        logger.info("Getcwm 插件初始化完成")
-
+    # cwm 指令
     @filter.command_group("cwm")
     def cwm(self):
         pass
@@ -119,6 +120,7 @@ class GetcwmPlugin(Star):
         async for result in self.novel_card(event, book_id):
             yield result
 
+    # 工具函数
     async def _subscribe(self, event: AstrMessageEvent, book_id:int):
         if not event.platform_meta.support_proactive_message:
             yield event.plain_result("该适配器不具有主动发送消息的能力,无法进行订阅")
@@ -221,3 +223,44 @@ class GetcwmPlugin(Star):
         except Exception as render_error:
             text_message = generate_text_func(*args, **kwargs)
             yield event.plain_result(f"图片生成失败，使用文本模式显示\n错误: {str(render_error)}\n\n{text_message}")
+
+    # 持久化数据相关
+    # 异步初始化函数
+    async def initialize(self):
+        subscribe_data = await self._load_subscribe_data()
+        self.b2u = subscribe_data["b2u"]
+        self.u2b = subscribe_data["u2b"]
+
+    # 异步卸载函数
+    async def terminate(self):
+        await self._save_subscribe_data()
+
+    # 保存订阅数据
+    async def _save_subscribe_data(self):
+        """保存订阅数据"""
+        try:
+            async with aiofiles.open(self.subscribe_data_file, 'w', encoding='utf-8') as f:
+                await f.write(
+                    json.dumps({
+                        "b2u":self.b2u,
+                        "u2b":self.u2b
+                    })
+                )
+        except OSError as e:
+            logger.error(f"保存订阅数据失败: {e}")
+        pass
+
+    # 异步加载订阅数据
+    async def _load_subscribe_data(self):
+        """异步加载订阅数据"""
+        try:
+            if os.path.exists(self.subscribe_data_file):
+                async with aiofiles.open(self.subscribe_data_file, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    if not content.strip():
+                        return {}
+                    return json.loads(content)
+            return {}
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"加载订阅数据失败: {e}")
+            return {}
