@@ -27,6 +27,10 @@ class GetcwmPlugin(Star):
         self.b2u = {}
         self.u2b = {}
 
+        # 订阅任务相关
+        self.subscribe_task: asyncio.Task | None = None
+        self.subscribe_running = True
+
     # cwm 指令
     @filter.command_group("cwm")
     def cwm(self):
@@ -264,3 +268,40 @@ class GetcwmPlugin(Star):
         except (json.JSONDecodeError, OSError) as e:
             logger.error(f"加载订阅数据失败: {e}")
             return {}
+
+    # 开启定时订阅任务
+    async def start_subscribe_task(self):
+        """启动定时订阅任务"""
+        self.subscribe_running = True
+        self.subscribe_task = asyncio.create_task(
+            self._periodic_subscribe(
+                self.interval_time
+            )
+        )
+        return self.subscribe_task
+
+    # 定时清理任务
+    async def _periodic_subscribe(self, interval_time=20):
+        """可控制的定期清理"""
+        while self.subscribe_running:
+            try:
+                # 等待指定时间
+                await asyncio.sleep(interval_time * 60)
+
+                # 检查是否还在运行
+                if not self.subscribe_running:
+                    break
+
+                # 执行订阅检测
+                await self._check_updates()
+
+            except asyncio.CancelledError:
+                # 任务被取消
+                break
+            except Exception as e:
+                # 记录错误但不停止任务
+                logger.error(f"[Mrfzccl] 清理任务出错: {e}")
+                await asyncio.sleep(60)  # 出错后等待1分钟再重试
+
+    async def _check_updates(self):
+        pass
