@@ -1,0 +1,8 @@
+{
+  "interval_time": {
+    "description": "订阅后检测更新的时间间隔(分)",
+    "type": "int",
+    "default": 20,
+    "hint": "例如：60"
+  }
+}
