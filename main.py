@@ -14,7 +14,6 @@ from .src.cwm_renderers import render_book_details_card, render_search_card
 from .src.cwm_utils import format_ts_cn
 from .src.tool import extract_help_parameters, set_chinese_font, plot_data
 
-
 @register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件", "3.0.0")
 class GetcwmPlugin(Star):
     def __init__(self, context: Context):
