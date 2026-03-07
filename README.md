@@ -25,7 +25,3 @@
  - **版本**：v1.0.9
  - **标语**：cwm有些小说还是挺好看的
  - **QQ群**: 1083090761 
-
-## 参考
-
-- AstrBot 插件开发文档：`https://astrbot.soulter.top/center/docs/%E5%BC%80%E5%8F%91/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91/`
