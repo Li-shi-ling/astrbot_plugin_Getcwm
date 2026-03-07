@@ -280,9 +280,9 @@ class GetcwmPlugin(Star):
         )
         return self.subscribe_task
 
-    # 定时清理任务
+    # 定时订阅任务
     async def _periodic_subscribe(self, interval_time=20):
-        """可控制的定期清理"""
+        """可控制的订阅"""
         while self.subscribe_running:
             try:
                 # 等待指定时间
@@ -300,8 +300,9 @@ class GetcwmPlugin(Star):
                 break
             except Exception as e:
                 # 记录错误但不停止任务
-                logger.error(f"[Mrfzccl] 清理任务出错: {e}")
+                logger.error(f"[Getcwm] 清理任务出错: {e}")
                 await asyncio.sleep(60)  # 出错后等待1分钟再重试
 
     async def _check_updates(self):
         pass
+
