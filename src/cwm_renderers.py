@@ -542,3 +542,230 @@ def render_book_details_card(
     filename = f"book_{uuid.uuid4().hex}.png"
     out_path = _render_html_to_png(html_str=html_str, size=(width, height), output_dir=Path(output_dir), filename=filename)
     return str(out_path)
+
+
+def render_subscribe_update_card(
+    details: Mapping[str, Any],
+    *,
+    book_id: int,
+    output_dir: str | Path = "./renders",
+    session: Any | None = None,
+) -> str:
+    works_name = details.get("Works_Name", "") or f"书籍ID：{int(book_id)}"
+    author_name = details.get("Author_Name", "") or "未知作者"
+    chapter_name = details.get("Chapter_Name", "") or "未知章节"
+    update_ts = int(details.get("Update_Time", -1) or -1)
+    cover_url = details.get("Cover_Image", "") or ""
+
+    book_url = f"https://www.ciweimao.com/book/{int(book_id)}"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cover_data_uri = fetch_image_data_uri(str(cover_url), session=session)
+    cover_html = (
+        f"<img class='cover' src='{cover_data_uri}' alt='cover' />"
+        if cover_data_uri
+        else "<div class='cover placeholder'>无封面</div>"
+    )
+
+    width = 1024
+    height = 520
+
+    html_str = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    * {{ box-sizing: border-box; }}
+    html, body {{ width: 100%; height: 100%; margin: 0; padding: 0; }}
+    body {{
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+      background:
+        radial-gradient(1100px 620px at 12% 16%, rgba(130, 255, 210, 0.38), transparent 62%),
+        radial-gradient(900px 560px at 92% 24%, rgba(120, 170, 255, 0.42), transparent 60%),
+        radial-gradient(1000px 700px at 55% 95%, rgba(255, 210, 120, 0.18), transparent 62%),
+        linear-gradient(135deg, #11243a 0%, #0d1426 45%, #0c1f2a 100%);
+      color: rgba(255,255,255,0.92);
+      padding: 26px;
+    }}
+    .card {{
+      height: 100%;
+      border-radius: 28px;
+      padding: 22px;
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.18);
+      box-shadow: 0 18px 50px rgba(0,0,0,0.35);
+      overflow: hidden;
+      position: relative;
+    }}
+    .card:before {{
+      content: "";
+      position: absolute;
+      inset: -160px -120px auto auto;
+      width: 520px;
+      height: 520px;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.20), transparent 62%);
+      transform: rotate(16deg);
+      opacity: 0.95;
+    }}
+    .top {{
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      position: relative;
+      z-index: 1;
+    }}
+    .brand {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 950;
+      letter-spacing: 0.5px;
+    }}
+    .brand .t {{ font-size: 14px; opacity: 0.88; }}
+    .badge {{
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(130, 255, 210, 0.95), rgba(120, 170, 255, 0.95));
+      color: rgba(10, 10, 20, 0.92);
+      font-weight: 950;
+      font-size: 12px;
+      box-shadow: 0 10px 22px rgba(0,0,0,0.22);
+    }}
+    .time {{
+      font-size: 12px;
+      opacity: 0.72;
+      text-align: right;
+      line-height: 1.2;
+    }}
+    .main {{
+      display: grid;
+      grid-template-columns: 210px 1fr;
+      gap: 18px;
+      margin-top: 14px;
+      position: relative;
+      z-index: 1;
+    }}
+    .cover, .cover.placeholder {{
+      width: 210px;
+      height: 300px;
+      border-radius: 20px;
+      object-fit: cover;
+      background: linear-gradient(135deg, rgba(120,170,255,0.35), rgba(130,255,210,0.35));
+      border: 1px solid rgba(255,255,255,0.18);
+      box-shadow: 0 18px 35px rgba(0,0,0,0.35);
+    }}
+    .cover.placeholder {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      color: rgba(10,10,20,0.92);
+      letter-spacing: 1px;
+    }}
+    .right {{
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }}
+    .title {{
+      font-size: 34px;
+      font-weight: 950;
+      line-height: 1.18;
+      text-shadow: 0 2px 0 rgba(0,0,0,0.25);
+      {line_clamp_css(2)}
+    }}
+    .author {{
+      margin-top: 8px;
+      font-size: 14px;
+      opacity: 0.88;
+      {line_clamp_css(1)}
+    }}
+    .block {{
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.06));
+      border: 1px solid rgba(255,255,255,0.14);
+    }}
+    .block .k {{ font-size: 12px; opacity: 0.78; }}
+    .block .v {{
+      margin-top: 7px;
+      font-size: 14px;
+      font-weight: 950;
+      line-height: 1.32;
+      {line_clamp_css(3)}
+    }}
+    .row {{
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }}
+    .kv {{
+      border-radius: 16px;
+      padding: 10px 12px;
+      background: rgba(0,0,0,0.18);
+      border: 1px solid rgba(255,255,255,0.12);
+      min-width: 0;
+    }}
+    .kv .k {{ font-size: 12px; opacity: 0.75; {line_clamp_css(1)} }}
+    .kv .v {{
+      margin-top: 5px;
+      font-size: 12px;
+      opacity: 0.88;
+      word-break: break-all;
+      {line_clamp_css(1)}
+    }}
+    .footer {{
+      margin-top: auto;
+      padding-top: 12px;
+      font-size: 12px;
+      opacity: 0.7;
+      text-align: right;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">
+      <div class="brand">
+        <div class="t">刺猬猫 · 订阅更新</div>
+        <div class="badge">NEW</div>
+      </div>
+      <div class="time">
+        更新于：{html_escape(format_ts_cn(update_ts))}<br/>
+        生成于：{html_escape(now_str)}
+      </div>
+    </div>
+    <div class="main">
+      <div>
+        {cover_html}
+      </div>
+      <div class="right">
+        <div class="title">{html_escape(works_name)}</div>
+        <div class="author">作者：{html_escape(author_name)} · ID：{html_escape(int(book_id))}</div>
+
+        <div class="block">
+          <div class="k">最新章节</div>
+          <div class="v">{html_escape(chapter_name)}</div>
+        </div>
+
+        <div class="row">
+          <div class="kv">
+            <div class="k">直达链接</div>
+            <div class="v">{html_escape(book_url)}</div>
+          </div>
+        </div>
+
+        <div class="footer">Getcwm / Subscribe Push</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+    filename = f"update_{int(book_id)}_{uuid.uuid4().hex}.png"
+    out_path = _render_html_to_png(html_str=html_str, size=(width, height), output_dir=Path(output_dir), filename=filename)
+    return str(out_path)
