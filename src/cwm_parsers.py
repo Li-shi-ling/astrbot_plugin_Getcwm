@@ -10,6 +10,8 @@ from .cwm_utils import cn_number_to_float, extract_chapter_info, safe_text
 
 logger = logging.getLogger(__name__)
 
+CWM_CRAWLER_DEBUG = False  # 解析/爬虫调试日志开关（默认关闭）
+
 
 def parse_search_html_content(html_content: str) -> list[dict[str, str]]:
     """解析搜索页 HTML，输出结构与 handle_search_html_content.json 一致。"""
@@ -72,13 +74,13 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
     from astrbot.api import logger as plugin_logger
 
     html_len = len(html_content or "")
-    plugin_logger.debug("[cwm] 解析详情页：开始。html_len=%s", html_len)
+    CWM_CRAWLER_DEBUG and plugin_logger.debug("[cwm] 解析详情页：开始。html_len=%s", html_len)
 
     try:
         soup = BeautifulSoup(html_content, "html.parser")
     except Exception as e:
         logger.exception("解析 HTML 失败: %s", e)
-        plugin_logger.debug("[cwm] 解析详情页：BeautifulSoup 解析失败：%s", e)
+        CWM_CRAWLER_DEBUG and plugin_logger.debug("[cwm] 解析详情页：BeautifulSoup 解析失败：%s", e)
         return None
 
     works_name = ""
@@ -101,7 +103,7 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
         out = re.sub(r"\s+", " ", str(s or "")).strip()
         return out[:n] + ("…" if len(out) > n else "")
 
-    plugin_logger.debug(
+    CWM_CRAWLER_DEBUG and plugin_logger.debug(
         "[cwm] 解析详情页：基础信息。works_name=%s author=%s tags=%s update_el=%s update_text=%s chapter=%s update_time=%s",
         _short(works_name, 60) or "未知",
         _short(author_name, 40) or "未知",
@@ -124,9 +126,13 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
             if len(candidates) >= 3:
                 break
         if candidates:
-            plugin_logger.debug("[cwm] 解析详情页：未找到 p.update-time，候选片段=%s", candidates)
+            CWM_CRAWLER_DEBUG and plugin_logger.debug(
+                "[cwm] 解析详情页：未找到 p.update-time，候选片段=%s", candidates
+            )
         else:
-            plugin_logger.debug("[cwm] 解析详情页：未找到 p.update-time，页面中也未发现“最近更新/更新时间”文本")
+            CWM_CRAWLER_DEBUG and plugin_logger.debug(
+                "[cwm] 解析详情页：未找到 p.update-time，页面中也未发现“最近更新/更新时间”文本"
+            )
 
     brief_introduction = ""
     desc_el = soup.select_one("div.book-desc")
@@ -163,7 +169,7 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
             data2["总收藏"] = cn_number_to_float(tmp[1])
             data2["总字数"] = cn_number_to_float(tmp[2])
 
-    plugin_logger.debug(
+    CWM_CRAWLER_DEBUG and plugin_logger.debug(
         "[cwm] 解析详情页：输出字段摘要。works_name=%s chapter=%s update_time=%s cover=%s data=%s data2=%s",
         _short(works_name, 60) or "未知",
         _short(chapter_name, 80) if chapter_name else "",

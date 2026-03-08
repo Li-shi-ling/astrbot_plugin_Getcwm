@@ -7,6 +7,8 @@ import requests
 
 from .cwm_constants import BASE_URL, DEFAULT_HEADERS, DEFAULT_TIMEOUT_S
 
+CWM_CRAWLER_DEBUG = False  # 爬虫调试日志开关（默认关闭）
+
 
 class CiweimaoClient:
     def __init__(self, *, session: requests.Session | None = None, timeout_s: int = DEFAULT_TIMEOUT_S):
@@ -18,13 +20,15 @@ class CiweimaoClient:
         url = f"{BASE_URL}/get-search-book-list/0-0-0-0-0-0/全部/{name}/{page}"
         from astrbot.api import logger
 
-        logger.debug("[cwm] 爬虫请求：搜索。name=%s page=%s url=%s 超时=%ss", name, page, url, self.timeout_s)
+        CWM_CRAWLER_DEBUG and logger.debug(
+            "[cwm] 爬虫请求：搜索。name=%s page=%s url=%s 超时=%ss", name, page, url, self.timeout_s
+        )
         start_t = time.perf_counter()
         try:
             resp = self.session.get(url, timeout=self.timeout_s)
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start_t) * 1000)
-            logger.debug(
+            CWM_CRAWLER_DEBUG and logger.debug(
                 "[cwm] 爬虫请求失败：搜索。name=%s page=%s 耗时ms=%s url=%s err=%s",
                 name,
                 page,
@@ -41,7 +45,7 @@ class CiweimaoClient:
         except Exception:
             text_len = -1
 
-        logger.debug(
+        CWM_CRAWLER_DEBUG and logger.debug(
             "[cwm] 爬虫响应：搜索。状态码=%s 耗时ms=%s 最终url=%s 内容类型=%s 编码=%s 猜测编码=%s 文本长度=%s",
             getattr(resp, "status_code", None),
             elapsed_ms,
@@ -58,13 +62,15 @@ class CiweimaoClient:
         url = f"{BASE_URL}/book/{int(book_id)}"
         from astrbot.api import logger
 
-        logger.debug("[cwm] 爬虫请求：书籍详情。book_id=%s url=%s 超时=%ss", int(book_id), url, self.timeout_s)
+        CWM_CRAWLER_DEBUG and logger.debug(
+            "[cwm] 爬虫请求：书籍详情。book_id=%s url=%s 超时=%ss", int(book_id), url, self.timeout_s
+        )
         start_t = time.perf_counter()
         try:
             resp = self.session.get(url, timeout=self.timeout_s)
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start_t) * 1000)
-            logger.debug(
+            CWM_CRAWLER_DEBUG and logger.debug(
                 "[cwm] 爬虫请求失败：书籍详情。book_id=%s 耗时ms=%s url=%s err=%s",
                 int(book_id),
                 elapsed_ms,
@@ -97,7 +103,7 @@ class CiweimaoClient:
             "包含Cloudflare": ("cloudflare" in html_text.lower()) if html_text else False,
         }
 
-        logger.debug(
+        CWM_CRAWLER_DEBUG and logger.debug(
             "[cwm] 爬虫响应：书籍详情。book_id=%s 状态码=%s 耗时ms=%s 重定向=%s 最终url=%s 内容类型=%s 编码=%s 猜测编码=%s 文本长度=%s 标题=%s 特征=%s",
             int(book_id),
             getattr(resp, "status_code", None),
