@@ -12,6 +12,7 @@ from .src.cwm_parsers import parse_book_details_html_content, parse_search_html_
 from .src.cwm_renderers import render_book_details_card, render_search_card, render_subscribe_update_card
 from .src.cwm_utils import format_ts_cn
 from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event.filter import PermissionType
 import aiofiles
 import json
 
@@ -46,8 +47,9 @@ class GetcwmPlugin(Star):
             "/cwm 搜索 [书名] [页码=1]          搜索书籍名片",
             "/cwm 名片 [书籍id]                 获取小说名片",
             "/cwm 订阅 [书籍id]                 在当前会话订阅更新推送",
-            "/cwm 订阅列表                      查看当前会话的全部订阅",
-            "/cwm 取消订阅 [书籍id]             取消当前会话对该书的订阅",
+            "/cwm 订阅列表 [会话umo=当前会话]    查看会话的全部订阅（指定其他会话需管理员）",
+            "/cwm 取消订阅 [书籍id] [会话umo=当前会话]  取消会话对该书的订阅（指定其他会话需管理员）",
+            "/cwm 全部订阅                      展示所有订阅(管理员)",
         ]
         yield event.plain_result("\n".join(help_text))
 
@@ -132,15 +134,22 @@ class GetcwmPlugin(Star):
         yield event.plain_result(msg)
 
     @cwm.command("订阅列表")
-    async def subscribe_list(self, event: AstrMessageEvent):
-        """/cwm 订阅列表，查看当前会话的全部订阅"""
-        msg = await self._get_subscribe_list_text(event)
+    async def subscribe_list(self, event: AstrMessageEvent, umo: str | None = None):
+        """/cwm 订阅列表 [会话umo=当前会话]，查看会话的全部订阅"""
+        msg = await self._get_subscribe_list_text(event, umo=umo)
         yield event.plain_result(msg)
 
     @cwm.command("取消订阅")
-    async def unsubscribe(self, event: AstrMessageEvent, book_id: int):
-        """/cwm 取消订阅 [书id]，取消当前会话对该书的订阅"""
-        msg = await self._unsubscribe(event, int(book_id))
+    async def unsubscribe(self, event: AstrMessageEvent, book_id: int, umo: str | None = None):
+        """/cwm 取消订阅 [书id] [会话umo=当前会话]，取消会话对该书的订阅"""
+        msg = await self._unsubscribe(event, int(book_id), umo=umo)
+        yield event.plain_result(msg)
+
+    @cwm.command("全部订阅")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def subscribe_all(self, event: AstrMessageEvent):
+        """/cwm 全部订阅，展示所有订阅（管理员）"""
+        msg = await self._get_all_subscribe_pairs_text()
         yield event.plain_result(msg)
 
     # 工具函数
@@ -215,17 +224,27 @@ class GetcwmPlugin(Star):
         title_str = str(title).strip() if title else f"书籍ID：{bid}"
         return f"订阅成功：{title_str}\n检测间隔：{int(self.interval_time)} 分钟"
 
-    async def _get_subscribe_list_text(self, event: AstrMessageEvent) -> str:
-        umo = str(event.unified_msg_origin)
-        logger.debug("[cwm] subscribe_list request: umo=%s", umo)
+    async def _get_subscribe_list_text(self, event: AstrMessageEvent, *, umo: str | None = None) -> str:
+        current_umo = str(event.unified_msg_origin)
+        target_umo = current_umo if not (umo and str(umo).strip()) else str(umo).strip()
+
+        if target_umo != current_umo and not event.is_admin():
+            logger.debug(
+                "[cwm] subscribe_list rejected: non-admin query other session. current_umo=%s target_umo=%s",
+                current_umo,
+                target_umo,
+            )
+            return "权限不足：仅管理员可指定其他会话"
+
+        logger.debug("[cwm] subscribe_list request: current_umo=%s target_umo=%s", current_umo, target_umo)
 
         async with self._subscribe_lock:
-            book_ids = list(self.u2b.get(umo, []) or [])
+            book_ids = list(self.u2b.get(target_umo, []) or [])
             metas = {int(bid): dict(self.bmeta.get(int(bid), {}) or {}) for bid in book_ids}
 
         if not book_ids:
-            logger.debug("[cwm] subscribe_list empty: umo=%s", umo)
-            return "当前会话暂无订阅"
+            logger.debug("[cwm] subscribe_list empty: target_umo=%s", target_umo)
+            return "当前会话暂无订阅" if target_umo == current_umo else "该会话暂无订阅"
 
         try:
             interval_min = max(1, int(self.interval_time or 0))
@@ -238,11 +257,16 @@ class GetcwmPlugin(Star):
         max_show = 200
         shown_ids = book_ids[:max_show]
 
-        lines: list[str] = [
-            f"当前会话订阅（{len(book_ids)}）",
-            f"检测间隔：{interval_min} 分钟",
-            f"订阅任务：{task_status}",
-        ]
+        lines: list[str] = []
+        lines.append(f"当前会话订阅（{len(book_ids)}）" if target_umo == current_umo else f"会话订阅（{len(book_ids)}）")
+        if target_umo != current_umo:
+            lines.append(f"会话umo：{target_umo}")
+        lines.extend(
+            [
+                f"检测间隔：{interval_min} 分钟",
+                f"订阅任务：{task_status}",
+            ]
+        )
         if len(book_ids) > max_show:
             lines.append(f"（订阅过多，仅展示前 {max_show} 本）")
 
@@ -264,20 +288,36 @@ class GetcwmPlugin(Star):
             lines.append(f"   链接：https://www.ciweimao.com/book/{int(bid)}")
 
         out = "\n".join(lines).strip()
-        logger.debug("[cwm] subscribe_list ok: umo=%s books=%s chars=%s", umo, len(book_ids), len(out))
+        logger.debug("[cwm] subscribe_list ok: target_umo=%s books=%s chars=%s", target_umo, len(book_ids), len(out))
         return out
 
-    async def _unsubscribe(self, event: AstrMessageEvent, book_id: int) -> str:
+    async def _unsubscribe(self, event: AstrMessageEvent, book_id: int, *, umo: str | None = None) -> str:
         bid = int(book_id)
-        umo = str(event.unified_msg_origin)
-        logger.debug("[cwm] unsubscribe request: book_id=%s umo=%s", bid, umo)
+        current_umo = str(event.unified_msg_origin)
+        target_umo = current_umo if not (umo and str(umo).strip()) else str(umo).strip()
+
+        if target_umo != current_umo and not event.is_admin():
+            logger.debug(
+                "[cwm] unsubscribe rejected: non-admin operate other session. current_umo=%s target_umo=%s book_id=%s",
+                current_umo,
+                target_umo,
+                bid,
+            )
+            return "权限不足：仅管理员可指定其他会话"
+
+        logger.debug(
+            "[cwm] unsubscribe request: book_id=%s current_umo=%s target_umo=%s",
+            bid,
+            current_umo,
+            target_umo,
+        )
 
         removed_from_book = False
-        removed_from_umo = False
+        removed_from_session = False
         before_book_subscribers = 0
         after_book_subscribers = 0
-        before_umo_books = 0
-        after_umo_books = 0
+        before_session_books = 0
+        after_session_books = 0
         meta_snapshot = None
         should_stop_task = False
         remaining_subscribed_books = 0
@@ -287,9 +327,9 @@ class GetcwmPlugin(Star):
 
             subs = self.b2u.get(bid, []) or []
             before_book_subscribers = len(subs)
-            if umo in subs:
+            if target_umo in subs:
                 try:
-                    subs.remove(umo)
+                    subs.remove(target_umo)
                 except ValueError:
                     pass
                 removed_from_book = True
@@ -300,38 +340,38 @@ class GetcwmPlugin(Star):
                 self.bmeta.pop(bid, None)
             after_book_subscribers = len(self.b2u.get(bid, []) or [])
 
-            books = self.u2b.get(umo, []) or []
-            before_umo_books = len(books)
+            books = self.u2b.get(target_umo, []) or []
+            before_session_books = len(books)
             if bid in books:
                 try:
                     books.remove(bid)
                 except ValueError:
                     pass
-                removed_from_umo = True
+                removed_from_session = True
             if books:
-                self.u2b[umo] = books
+                self.u2b[target_umo] = books
             else:
-                self.u2b.pop(umo, None)
-            after_umo_books = len(self.u2b.get(umo, []) or [])
+                self.u2b.pop(target_umo, None)
+            after_session_books = len(self.u2b.get(target_umo, []) or [])
 
             remaining_subscribed_books = len(self.b2u)
             should_stop_task = remaining_subscribed_books <= 0
 
         logger.debug(
-            "[cwm] unsubscribe updated: book_id=%s umo=%s removed_from_book=%s removed_from_umo=%s book_subscribers=%s->%s umo_books=%s->%s remaining_books=%s",
+            "[cwm] unsubscribe updated: book_id=%s target_umo=%s removed_from_book=%s removed_from_session=%s book_subscribers=%s->%s session_books=%s->%s remaining_books=%s",
             bid,
-            umo,
+            target_umo,
             removed_from_book,
-            removed_from_umo,
+            removed_from_session,
             before_book_subscribers,
             after_book_subscribers,
-            before_umo_books,
-            after_umo_books,
+            before_session_books,
+            after_session_books,
             remaining_subscribed_books,
         )
 
-        if not removed_from_book and not removed_from_umo:
-            return f"取消订阅失败：当前会话未订阅该书（ID：{bid}）"
+        if not removed_from_book and not removed_from_session:
+            return f"取消订阅失败：该会话未订阅该书（ID：{bid}）"
 
         logger.debug("[cwm] unsubscribe persisting data: file=%s", self.subscribe_data_file)
         await self._save_subscribe_data()
@@ -353,8 +393,41 @@ class GetcwmPlugin(Star):
 
         title = str((meta_snapshot or {}).get("title_text") or "").strip()
         title_str = title if title else f"书籍ID：{bid}"
+        session_suffix = "" if target_umo == current_umo else f"（会话：{target_umo}）"
         extra = "（已无任何订阅，订阅检测任务已停止）" if should_stop_task else ""
-        return f"已取消订阅：{title_str}{extra}"
+        return f"已取消订阅：{title_str}{session_suffix}{extra}"
+
+    async def _get_all_subscribe_pairs_text(self) -> str:
+        logger.debug("[cwm] subscribe_all request")
+        async with self._subscribe_lock:
+            pairs: list[tuple[str, int]] = []
+            for umo, bids in (self.u2b or {}).items():
+                if not bids:
+                    continue
+                for bid in bids:
+                    try:
+                        pairs.append((str(umo), int(bid)))
+                    except Exception:
+                        continue
+
+        if not pairs:
+            logger.debug("[cwm] subscribe_all empty")
+            return "暂无任何订阅"
+
+        pairs.sort(key=lambda x: (x[0], x[1]))
+
+        max_show = 5000
+        show_pairs = pairs[:max_show]
+        lines = [f"全部订阅（{len(pairs)}）"]
+        if len(pairs) > max_show:
+            lines.append(f"（仅展示前 {max_show} 条）")
+
+        for umo, bid in show_pairs:
+            lines.append(f"{umo}:{bid}")
+
+        out = "\n".join(lines).strip()
+        logger.debug("[cwm] subscribe_all ok: pairs=%s chars=%s", len(pairs), len(out))
+        return out
 
     async def _fetch_latest_meta(self, book_id: int) -> dict | None:
         logger.debug("[cwm] fetch_latest_meta start: book_id=%s", book_id)
