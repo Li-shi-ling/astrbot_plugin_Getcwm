@@ -53,22 +53,43 @@ def extract_chapter_info(update_text: str) -> tuple[str, int]:
         return "", -1
 
     text = update_text.strip()
-    text = re.sub(r"^(最近更新|更新时间)[:：]\s*", "", text)
+    text = re.sub(r"^(最近更新|更新时间|最后更新|最新更新)[:：]\s*", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
 
-    if "/" in text:
-        time_part, chapter_part = [p.strip() for p in text.split("/", 1)]
-    else:
-        parts = text.split()
-        if len(parts) < 2:
-            return "", -1
-        time_part = " ".join(parts[:2])
-        chapter_part = " ".join(parts[2:]).strip()
+    chapter_part = text
+    ts = -1
 
-    try:
-        dt = datetime.strptime(time_part, "%Y-%m-%d %H:%M:%S").replace(tzinfo=asia_shanghai_tz())
-        ts = int(dt.timestamp())
-    except Exception:
-        ts = -1
+    # 兼容多种格式（站点可能变更）
+    # 1) 最近更新：2019-08-05 23:39:07 / 571 xxx
+    # 2) 最后更新：第240章 xxx（9/312） [ 2026-03-08 00:10:02 ]
+    # 3) 2026-03-08 00:10:02 / 第240章 xxx
+    dt_patterns: list[tuple[str, str]] = [
+        (r"\[\s*(20\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*\]", "%Y-%m-%d %H:%M:%S"),
+        (r"(20\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", "%Y-%m-%d %H:%M:%S"),
+        (r"\[\s*(20\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})\s*\]", "%Y/%m/%d %H:%M:%S"),
+        (r"(20\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})", "%Y/%m/%d %H:%M:%S"),
+    ]
+
+    for pat, fmt in dt_patterns:
+        m = re.search(pat, text)
+        if not m:
+            continue
+        dt_str = (m.group(1) or "").strip()
+        try:
+            dt = datetime.strptime(dt_str, fmt).replace(tzinfo=asia_shanghai_tz())
+            ts = int(dt.timestamp())
+        except Exception:
+            ts = -1
+
+        # 删除时间片段（含方括号），剩余部分当作章节信息
+        chapter_part = (text[: m.start()] + " " + text[m.end() :]).strip()
+        chapter_part = re.sub(r"[\[\]]", " ", chapter_part)
+        chapter_part = re.sub(r"\s+", " ", chapter_part).strip()
+        break
+
+    # 删除残留分隔符（注意：章节名可能包含 9/312 这类斜杠，不能把中间的 / 当作分隔符）
+    chapter_part = re.sub(r"^[\s/|:：\-–—]+", "", chapter_part).strip()
+    chapter_part = re.sub(r"[\s/|:：\-–—]+$", "", chapter_part).strip()
 
     return chapter_part, ts
 
