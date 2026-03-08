@@ -46,6 +46,8 @@ class GetcwmPlugin(Star):
             "/cwm 搜索 [书名] [页码=1]          搜索书籍名片",
             "/cwm 名片 [书籍id]                 获取小说名片",
             "/cwm 订阅 [书籍id]                 在当前会话订阅更新推送",
+            "/cwm 订阅列表                      查看当前会话的全部订阅",
+            "/cwm 取消订阅 [书籍id]             取消当前会话对该书的订阅",
         ]
         yield event.plain_result("\n".join(help_text))
 
@@ -129,6 +131,18 @@ class GetcwmPlugin(Star):
         msg = await self._subscribe(event, int(book_id))
         yield event.plain_result(msg)
 
+    @cwm.command("订阅列表")
+    async def subscribe_list(self, event: AstrMessageEvent):
+        """/cwm 订阅列表，查看当前会话的全部订阅"""
+        msg = await self._get_subscribe_list_text(event)
+        yield event.plain_result(msg)
+
+    @cwm.command("取消订阅")
+    async def unsubscribe(self, event: AstrMessageEvent, book_id: int):
+        """/cwm 取消订阅 [书id]，取消当前会话对该书的订阅"""
+        msg = await self._unsubscribe(event, int(book_id))
+        yield event.plain_result(msg)
+
     # 工具函数
     async def _subscribe(self, event: AstrMessageEvent, book_id: int) -> str:
         support_proactive = False
@@ -200,6 +214,147 @@ class GetcwmPlugin(Star):
         title = (latest_meta or {}).get("title_text") if isinstance(latest_meta, dict) else None
         title_str = str(title).strip() if title else f"书籍ID：{bid}"
         return f"订阅成功：{title_str}\n检测间隔：{int(self.interval_time)} 分钟"
+
+    async def _get_subscribe_list_text(self, event: AstrMessageEvent) -> str:
+        umo = str(event.unified_msg_origin)
+        logger.debug("[cwm] subscribe_list request: umo=%s", umo)
+
+        async with self._subscribe_lock:
+            book_ids = list(self.u2b.get(umo, []) or [])
+            metas = {int(bid): dict(self.bmeta.get(int(bid), {}) or {}) for bid in book_ids}
+
+        if not book_ids:
+            logger.debug("[cwm] subscribe_list empty: umo=%s", umo)
+            return "当前会话暂无订阅"
+
+        try:
+            interval_min = max(1, int(self.interval_time or 0))
+        except Exception:
+            interval_min = 20
+
+        task_running = bool(self.subscribe_running and self.subscribe_task and not self.subscribe_task.done())
+        task_status = "运行中" if task_running else "未运行"
+
+        max_show = 200
+        shown_ids = book_ids[:max_show]
+
+        lines: list[str] = [
+            f"当前会话订阅（{len(book_ids)}）",
+            f"检测间隔：{interval_min} 分钟",
+            f"订阅任务：{task_status}",
+        ]
+        if len(book_ids) > max_show:
+            lines.append(f"（订阅过多，仅展示前 {max_show} 本）")
+
+        for idx, bid in enumerate(shown_ids, start=1):
+            meta = metas.get(int(bid), {}) or {}
+            title = str(meta.get("title_text", "") or "").strip() or f"书籍ID：{int(bid)}"
+            chapter = str(meta.get("chapter", "") or "").strip()
+            try:
+                ts = int(meta.get("timestamp", -1) or -1)
+            except Exception:
+                ts = -1
+
+            lines.append(f"\n{idx}. {title}")
+            lines.append(f"   ID：{int(bid)}")
+            if chapter:
+                lines.append(f"   最新章节：{chapter}")
+            if ts > 0:
+                lines.append(f"   更新时间：{format_ts_cn(ts)}")
+            lines.append(f"   链接：https://www.ciweimao.com/book/{int(bid)}")
+
+        out = "\n".join(lines).strip()
+        logger.debug("[cwm] subscribe_list ok: umo=%s books=%s chars=%s", umo, len(book_ids), len(out))
+        return out
+
+    async def _unsubscribe(self, event: AstrMessageEvent, book_id: int) -> str:
+        bid = int(book_id)
+        umo = str(event.unified_msg_origin)
+        logger.debug("[cwm] unsubscribe request: book_id=%s umo=%s", bid, umo)
+
+        removed_from_book = False
+        removed_from_umo = False
+        before_book_subscribers = 0
+        after_book_subscribers = 0
+        before_umo_books = 0
+        after_umo_books = 0
+        meta_snapshot = None
+        should_stop_task = False
+        remaining_subscribed_books = 0
+
+        async with self._subscribe_lock:
+            meta_snapshot = dict(self.bmeta.get(bid, {}) or {})
+
+            subs = self.b2u.get(bid, []) or []
+            before_book_subscribers = len(subs)
+            if umo in subs:
+                try:
+                    subs.remove(umo)
+                except ValueError:
+                    pass
+                removed_from_book = True
+            if subs:
+                self.b2u[bid] = subs
+            else:
+                self.b2u.pop(bid, None)
+                self.bmeta.pop(bid, None)
+            after_book_subscribers = len(self.b2u.get(bid, []) or [])
+
+            books = self.u2b.get(umo, []) or []
+            before_umo_books = len(books)
+            if bid in books:
+                try:
+                    books.remove(bid)
+                except ValueError:
+                    pass
+                removed_from_umo = True
+            if books:
+                self.u2b[umo] = books
+            else:
+                self.u2b.pop(umo, None)
+            after_umo_books = len(self.u2b.get(umo, []) or [])
+
+            remaining_subscribed_books = len(self.b2u)
+            should_stop_task = remaining_subscribed_books <= 0
+
+        logger.debug(
+            "[cwm] unsubscribe updated: book_id=%s umo=%s removed_from_book=%s removed_from_umo=%s book_subscribers=%s->%s umo_books=%s->%s remaining_books=%s",
+            bid,
+            umo,
+            removed_from_book,
+            removed_from_umo,
+            before_book_subscribers,
+            after_book_subscribers,
+            before_umo_books,
+            after_umo_books,
+            remaining_subscribed_books,
+        )
+
+        if not removed_from_book and not removed_from_umo:
+            return f"取消订阅失败：当前会话未订阅该书（ID：{bid}）"
+
+        logger.debug("[cwm] unsubscribe persisting data: file=%s", self.subscribe_data_file)
+        await self._save_subscribe_data()
+
+        if should_stop_task:
+            logger.debug("[cwm] unsubscribe: no subscriptions left, stopping periodic task")
+            self.subscribe_running = False
+            if self.subscribe_task and not self.subscribe_task.done():
+                self.subscribe_task.cancel()
+                try:
+                    await self.subscribe_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.debug("[cwm] unsubscribe: stop task await raised: %s", e)
+        else:
+            logger.debug("[cwm] unsubscribe: subscriptions remain, ensuring periodic task running")
+            await self.start_subscribe_task()
+
+        title = str((meta_snapshot or {}).get("title_text") or "").strip()
+        title_str = title if title else f"书籍ID：{bid}"
+        extra = "（已无任何订阅，订阅检测任务已停止）" if should_stop_task else ""
+        return f"已取消订阅：{title_str}{extra}"
 
     async def _fetch_latest_meta(self, book_id: int) -> dict | None:
         logger.debug("[cwm] fetch_latest_meta start: book_id=%s", book_id)
