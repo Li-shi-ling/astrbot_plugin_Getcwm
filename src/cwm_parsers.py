@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -68,10 +69,16 @@ def parse_search_html_content(html_content: str) -> list[dict[str, str]]:
 
 def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
     """解析书籍详情页 HTML，输出结构与 handle_book_details_html_content.json 一致。"""
+    from astrbot.api import logger as plugin_logger
+
+    html_len = len(html_content or "")
+    plugin_logger.debug("[cwm] 解析详情页：开始。html_len=%s", html_len)
+
     try:
         soup = BeautifulSoup(html_content, "html.parser")
     except Exception as e:
         logger.exception("解析 HTML 失败: %s", e)
+        plugin_logger.debug("[cwm] 解析详情页：BeautifulSoup 解析失败：%s", e)
         return None
 
     works_name = ""
@@ -84,9 +91,42 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
 
     chapter_name = ""
     update_time = -1
+    update_text = ""
     update_el = soup.select_one("p.update-time")
     if update_el:
-        chapter_name, update_time = extract_chapter_info(safe_text(update_el))
+        update_text = safe_text(update_el)
+        chapter_name, update_time = extract_chapter_info(update_text)
+
+    def _short(s: str, n: int = 160) -> str:
+        out = re.sub(r"\s+", " ", str(s or "")).strip()
+        return out[:n] + ("…" if len(out) > n else "")
+
+    plugin_logger.debug(
+        "[cwm] 解析详情页：基础信息。works_name=%s author=%s tags=%s update_el=%s update_text=%s chapter=%s update_time=%s",
+        _short(works_name, 60) or "未知",
+        _short(author_name, 40) or "未知",
+        len(tag_list),
+        bool(update_el),
+        _short(update_text, 120) if update_el else "",
+        _short(chapter_name, 80) if chapter_name else "",
+        update_time,
+    )
+
+    if not update_el:
+        # 站点结构变更时的兜底排查：找出含“最近更新/更新时间”的片段，方便定位 selector
+        candidates: list[str] = []
+        for el in soup.find_all(["p", "div", "span", "li"]):
+            txt = safe_text(el)
+            if not txt:
+                continue
+            if "最近更新" in txt or "更新时间" in txt:
+                candidates.append(_short(txt, 140))
+            if len(candidates) >= 3:
+                break
+        if candidates:
+            plugin_logger.debug("[cwm] 解析详情页：未找到 p.update-time，候选片段=%s", candidates)
+        else:
+            plugin_logger.debug("[cwm] 解析详情页：未找到 p.update-time，页面中也未发现“最近更新/更新时间”文本")
 
     brief_introduction = ""
     desc_el = soup.select_one("div.book-desc")
@@ -122,6 +162,16 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
             data2["总点击"] = cn_number_to_float(tmp[0])
             data2["总收藏"] = cn_number_to_float(tmp[1])
             data2["总字数"] = cn_number_to_float(tmp[2])
+
+    plugin_logger.debug(
+        "[cwm] 解析详情页：输出字段摘要。works_name=%s chapter=%s update_time=%s cover=%s data=%s data2=%s",
+        _short(works_name, 60) or "未知",
+        _short(chapter_name, 80) if chapter_name else "",
+        update_time,
+        bool(cover_image),
+        list(data.keys())[:10],
+        list(data2.keys()),
+    )
 
     return {
         "Works_Name": works_name,
