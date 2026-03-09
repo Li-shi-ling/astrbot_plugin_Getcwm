@@ -52,6 +52,7 @@ class GetcwmPlugin(Star):
             "/cwm 订阅列表 [会话umo=当前会话]    查看会话的全部订阅（指定其他会话需管理员）",
             "/cwm 取消订阅 [书籍id] [会话umo=当前会话]  取消会话对该书的订阅（指定其他会话需管理员）",
             "/cwm 全部订阅                      展示所有订阅(管理员)",
+            "/cwm 测试推送                      强制向当前会话推送订阅更新(管理员,用于测试)",
         ]
         yield event.plain_result("\n".join(help_text))
 
@@ -155,6 +156,157 @@ class GetcwmPlugin(Star):
         yield event.plain_result(msg)
 
     # 工具函数
+    @cwm.command("测试推送")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def admin_test_push(self, event: AstrMessageEvent):
+        """/cwm 测试推送（管理员）：强制向当前会话推送本会话所有订阅更新（将爬到的数据视为新章，必定触发发送），用于测试订阅推送。"""
+        msg = await self._force_push_subscribed_books_to_current_session(event)
+        yield event.plain_result(msg)
+
+    async def _force_push_subscribed_books_to_current_session(self, event: AstrMessageEvent) -> str:
+        target_umo = str(getattr(event, "unified_msg_origin", "") or "")
+
+        support_proactive = False
+        try:
+            support_proactive = bool(event.platform_meta.support_proactive_message)
+        except Exception:
+            support_proactive = False
+
+        if not support_proactive:
+            logger.warning("[cwm][test_push] adapter does not support proactive messages. umo=%s", target_umo)
+            return "该适配器不支持主动消息，无法测试推送"
+
+        async with self._subscribe_lock:
+            book_ids = list(self.u2b.get(target_umo, []) or [])
+
+        if not book_ids:
+            logger.info("[cwm][test_push] no subscriptions for current session. umo=%s", target_umo)
+            return "当前会话暂无订阅，无法测试推送"
+
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        logger.info(
+            "[cwm][test_push] start. run_id=%s umo=%s books=%s book_ids=%s",
+            run_id,
+            target_umo,
+            len(book_ids),
+            book_ids,
+        )
+
+        total_ok = 0
+        total_failed = 0
+        pushed = 0
+        fetch_failed = 0
+        meta_updated = 0
+        dirty = False
+
+        for bid in book_ids:
+            bid = int(bid)
+            logger.info("[cwm][test_push] run_id=%s fetch details. book_id=%s", run_id, bid)
+
+            details: dict = {}
+            fetch_ok = False
+            try:
+                html = await self._run_sync(self._cwm_client.get_book_details, int(bid))
+                details = parse_book_details_html_content(html) or {}
+                fetch_ok = True
+            except Exception as e:
+                fetch_failed += 1
+                logger.exception("[cwm][test_push] run_id=%s fetch failed. book_id=%s err=%s", run_id, bid, e)
+                details = {}
+
+            async with self._subscribe_lock:
+                old_meta = dict(self.bmeta.get(int(bid), {}) or {})
+
+            works_name = str(details.get("Works_Name") or old_meta.get("title_text") or f"书籍ID：{int(bid)}")
+            chapter_name = str(details.get("Chapter_Name") or old_meta.get("chapter") or "")
+            try:
+                update_ts = int(details.get("Update_Time", -1) or -1)
+            except Exception:
+                update_ts = -1
+            if update_ts <= 0:
+                try:
+                    update_ts = int(old_meta.get("timestamp", -1) or -1)
+                except Exception:
+                    update_ts = -1
+
+            new_meta = {"title_text": works_name, "timestamp": int(update_ts), "chapter": chapter_name}
+
+            if not isinstance(details, dict):
+                details = {}
+            details.setdefault("Works_Name", works_name)
+            if chapter_name and not details.get("Chapter_Name"):
+                details["Chapter_Name"] = chapter_name
+            if update_ts > 0:
+                try:
+                    curr_dt = int(details.get("Update_Time", -1) or -1)
+                except Exception:
+                    curr_dt = -1
+                if curr_dt <= 0:
+                    details["Update_Time"] = int(update_ts)
+
+            # update baseline meta without regression
+            async with self._subscribe_lock:
+                curr_meta = dict(self.bmeta.get(int(bid), {}) or {})
+                try:
+                    curr_ts = int(curr_meta.get("timestamp", -1) or -1)
+                except Exception:
+                    curr_ts = -1
+                if update_ts > 0 and (curr_ts <= 0 or update_ts >= curr_ts):
+                    if curr_meta != new_meta:
+                        self.bmeta[int(bid)] = new_meta
+                        dirty = True
+                        meta_updated += 1
+
+            logger.info(
+                "[cwm][test_push] run_id=%s meta prepared. book_id=%s fetch_ok=%s title=%s chapter=%s ts=%s",
+                run_id,
+                bid,
+                fetch_ok,
+                works_name,
+                chapter_name,
+                update_ts,
+            )
+
+            # treat scraped data as a new chapter and ALWAYS push to current session
+            try:
+                res = await self._push_update(int(bid), details, [target_umo], old_meta=old_meta or None)
+                pushed += 1
+                ok = int(res.get("ok", 0) or 0)
+                failed = int(res.get("failed", 0) or 0)
+                total_ok += ok
+                total_failed += failed
+                logger.info(
+                    "[cwm][test_push] run_id=%s pushed. book_id=%s ok=%s failed=%s has_image=%s image_path=%s",
+                    run_id,
+                    bid,
+                    ok,
+                    failed,
+                    bool(res.get("has_image")),
+                    res.get("image_path"),
+                )
+            except Exception as e:
+                total_failed += 1
+                logger.exception("[cwm][test_push] run_id=%s push failed. book_id=%s err=%s", run_id, bid, e)
+
+        if dirty:
+            await self._save_subscribe_data()
+            logger.info("[cwm][test_push] run_id=%s subscribe data saved. meta_updated=%s", run_id, meta_updated)
+
+        logger.info(
+            "[cwm][test_push] done. run_id=%s books=%s pushed=%s ok=%s failed=%s fetch_failed=%s",
+            run_id,
+            len(book_ids),
+            pushed,
+            total_ok,
+            total_failed,
+            fetch_failed,
+        )
+
+        return (
+            f"测试推送完成：已处理 {len(book_ids)} 本，推送处理 {pushed} 本，发送成功 {total_ok}，"
+            f"发送失败 {total_failed}，爬取失败 {fetch_failed}。run_id={run_id}"
+        )
+
     async def _subscribe(self, event: AstrMessageEvent, book_id: int) -> str:
         support_proactive = False
         try:
@@ -894,7 +1046,7 @@ class GetcwmPlugin(Star):
         else:
             CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 更新检测：完成，无变更")
 
-    async def _push_update(self, book_id: int, details: dict, subscribers: list[str], *, old_meta: dict | None = None):
+    async def _push_update(self, book_id: int, details: dict, subscribers: list[str], *, old_meta: dict | None = None) -> dict:
         update_text = self._format_subscribe_update_text(book_id, details, old_meta=old_meta)
         CWM_SUBSCRIBE_DEBUG and logger.debug(
             "[cwm] 推送更新：开始。book_id=%s subscribers=%s text_chars=%s has_old_meta=%s",
@@ -949,6 +1101,13 @@ class GetcwmPlugin(Star):
                 )
 
         CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 推送更新：完成。book_id=%s ok=%s failed=%s", book_id, ok, failed)
+
+        return {
+            "ok": ok,
+            "failed": failed,
+            "has_image": has_image,
+            "image_path": str(image_path) if image_path else None,
+        }
 
     def _format_subscribe_update_text(self, book_id: int, details: dict, *, old_meta: dict | None = None) -> str:
         works_name = details.get("Works_Name") or f"书籍ID：{int(book_id)}"
