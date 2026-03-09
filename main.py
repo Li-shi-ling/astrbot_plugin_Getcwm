@@ -1095,7 +1095,7 @@ class GetcwmPlugin(Star):
                 CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 推送更新：发送成功。book_id=%s umo=%s", book_id, umo)
             except Exception as e:
                 failed += 1
-                logger.error(f"[Getcwm] 推送失败 book_id={book_id} umo={umo}: {e}")
+                logger.error(f"[cwm] 推送失败 book_id={book_id} umo={umo}: {e}")
                 CWM_SUBSCRIBE_DEBUG and logger.debug(
                     "[cwm] 推送更新：发送失败。book_id=%s umo=%s err=%s", book_id, umo, e
                 )
