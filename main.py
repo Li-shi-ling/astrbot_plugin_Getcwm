@@ -4,7 +4,7 @@ import asyncio
 import functools
 from pathlib import Path
 from datetime import datetime
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register, StarTools
 import astrbot.api.message_components as Comp
 from .src.cwm_client import CiweimaoClient
@@ -1074,15 +1074,15 @@ class GetcwmPlugin(Star):
                 "[cwm] 推送更新：卡片渲染失败。book_id=%s err=%s", book_id, e
             )
 
-        chain = [Comp.Plain(update_text)]
+        chain = MessageChain().message(update_text)
         has_image = bool(image_path and os.path.exists(str(image_path)))
         if has_image:
-            chain.append(Comp.Image.fromFileSystem(str(image_path)))
+            chain.file_image(str(image_path))
         CWM_SUBSCRIBE_DEBUG and logger.debug(
             "[cwm] 推送更新：消息链构建完成。book_id=%s has_image=%s chain_len=%s",
             book_id,
             has_image,
-            len(chain),
+            len(getattr(chain, "chain", []) or []),
         )
 
         ok = 0
