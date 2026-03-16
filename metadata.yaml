@@ -1,6 +1,6 @@
 name: Getcwm # 这是你的插件的唯一识别名。
 desc: 刺猬猫小说相关插件,获取小说信息与定时更新提醒。 # 插件简短描述
 help: 请查看readme.md。 # 插件的帮助信息
-version: v1.0.9 # 插件版本号。格式：v1.1.1 或者 v1.1
+version: v1.1.0 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: lishining # 作者
 repo: https://github.com/Li-shi-ling/astrbot_plugin_Getcwm # 插件的仓库地址
