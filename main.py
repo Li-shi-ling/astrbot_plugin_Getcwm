@@ -78,17 +78,20 @@ class GetcwmPlugin(Star):
         return merged
 
     async def _update_book_meta_if_newer(self, book_id: int, meta: dict) -> bool:
-        if self._safe_int(meta.get("timestamp")) <= 0:
+        meta_ts = self._safe_int(meta.get("timestamp"))
+        if meta_ts <= 0:
             return False
+        normalized_meta = dict(meta)
+        normalized_meta["timestamp"] = meta_ts
 
         async with self._subscribe_lock:
             current_meta = dict(self.bmeta.get(int(book_id), {}) or {})
             current_ts = self._safe_int(current_meta.get("timestamp"))
-            if current_ts > 0 and meta["timestamp"] < current_ts:
+            if current_ts > 0 and meta_ts < current_ts:
                 return False
-            if current_meta == meta:
+            if current_meta == normalized_meta:
                 return False
-            self.bmeta[int(book_id)] = meta
+            self.bmeta[int(book_id)] = normalized_meta
             return True
 
     # cwm 指令
@@ -695,9 +698,10 @@ class GetcwmPlugin(Star):
             "[cwm] 获取最新元数据开始：book_id=%s", book_id
         )
         try:
-            html = await self._run_sync(self._cwm_client.get_book_details, int(book_id))
+            bid = int(book_id)
+            html = await self._run_sync(self._cwm_client.get_book_details, bid)
             data = parse_book_details_html_content(html) or {}
-            meta = self._build_book_meta(int(book_id), data)
+            meta = self._build_book_meta(bid, data)
             CWM_SUBSCRIBE_DEBUG and logger.debug(
                 "[cwm] 获取最新元数据成功：book_id=%s ts=%s chapter=%s title=%s",
                 book_id,
@@ -1296,7 +1300,7 @@ class GetcwmPlugin(Star):
     ) -> str:
         works_name = details.get("Works_Name") or f"书籍ID：{int(book_id)}"
         chapter_name = details.get("Chapter_Name") or "未知章节"
-        update_ts = int(details.get("Update_Time", -1) or -1)
+        update_ts = self._safe_int(details.get("Update_Time"))
         url = f"https://www.ciweimao.com/book/{int(book_id)}"
 
         lines = [
@@ -1308,10 +1312,7 @@ class GetcwmPlugin(Star):
             lines.append(f"更新时间：{format_ts_cn(update_ts)}")
         if old_meta:
             old_ch = str(old_meta.get("chapter", "") or "")
-            try:
-                old_ts = int(old_meta.get("timestamp", -1) or -1)
-            except Exception:
-                old_ts = -1
+            old_ts = self._safe_int(old_meta.get("timestamp"))
             if old_ch or old_ts > 0:
                 old_line = "上次记录："
                 if old_ch:
