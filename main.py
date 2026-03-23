@@ -13,14 +13,17 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star, StarTools, register
 
-from .src.cwm_client import CiweimaoClient
-from .src.cwm_parsers import parse_book_details_html_content, parse_search_html_content
-from .src.cwm_renderers import (
+from .src.cards import (
     render_book_details_card,
     render_search_card,
     render_subscribe_update_card,
 )
-from .src.cwm_utils import format_ts_cn
+from .src.core import (
+    CiweimaoClient,
+    format_ts_cn,
+    parse_book_details_html_content,
+    parse_search_html_content,
+)
 
 CWM_SUBSCRIBE_DEBUG = False  # 订阅相关 debug 日志开关（默认关闭）
 

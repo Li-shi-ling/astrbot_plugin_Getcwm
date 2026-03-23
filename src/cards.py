@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 try:
     from html2image import Html2Image  # type: ignore
@@ -12,76 +13,82 @@ except Exception as e:  # pragma: no cover
     Html2Image = None  # type: ignore[assignment]
     _HTML2IMAGE_IMPORT_ERROR = e
 
-from .cwm_utils import fetch_image_data_uri, format_ts_cn, html_escape, line_clamp_css
+from .core import (
+    CardRenderResult,
+    fetch_image_data_uri,
+    format_ts_cn,
+    html_escape,
+    line_clamp_css,
+    parse_book_details_html_content,
+    parse_search_html_content,
+)
+
 
 def _calc_search_card_height(num_items: int) -> int:
-    """根据当前 CSS 估算搜索卡片所需画布高度，避免底部被裁切。"""
     n = max(1, int(num_items))
 
     body_pad_y = 26 * 2
     card_pad_y = 22 + 18
-
     header_h = 64
     header_mb = 14
-
     item_h = 140
     list_gap = 12
     list_h = n * item_h + max(0, n - 1) * list_gap
-
     footer_mt = 10
     footer_h = 16
-
-    # 预留一些冗余，避免不同字体/渲染差异导致裁切
     safety = 80
-    return body_pad_y + card_pad_y + header_h + header_mb + list_h + footer_mt + footer_h + safety
+    return (
+        body_pad_y
+        + card_pad_y
+        + header_h
+        + header_mb
+        + list_h
+        + footer_mt
+        + footer_h
+        + safety
+    )
+
 
 def _calc_book_details_card_height(num_tags: int, num_props: int) -> int:
-    """根据当前 CSS 估算详情卡片所需画布高度，避免信息块被裁切。"""
     tags = max(0, int(num_tags))
     props = max(0, int(num_props))
 
-    # 画布结构：body padding + card padding + (top + main + margin)
     body_pad_y = 26 * 2
     card_pad_y = 22 * 2
     top_h = 20
     main_mt = 14
 
-    # main 的高度需要覆盖右侧信息列的总高度（否则 card overflow:hidden 会裁切）
-    title_h = 82  # 2 行标题（34px * 1.18）
-    author_h = 26  # 8px margin + 1 行作者
-
-    # tags：右侧列宽约 690px，标签 max-width 180px，保守估算每行 3 个
+    title_h = 82
+    author_h = 26
     tag_rows = math.ceil(min(tags, 10) / 3) if tags else 0
-    tags_h = 10 + (tag_rows * 27) + max(0, tag_rows - 1) * 8  # margin-top + rows + gap
-
-    stats_h = 82  # margin-top + 统计块高度
-    chapter_h = 96  # margin-top + 章节块高度（2 行）
-
+    tags_h = 10 + (tag_rows * 27) + max(0, tag_rows - 1) * 8
+    stats_h = 82
+    chapter_h = 96
     prop_rows = math.ceil(min(props, 8) / 2) if props else 0
-    props_h = 12 + (prop_rows * 58) + max(0, prop_rows - 1) * 10  # margin-top + rows + gap
-
-    intro_h = 124  # 简介块（4 行）高度上限
+    props_h = 12 + (prop_rows * 58) + max(0, prop_rows - 1) * 10
+    intro_h = 124
 
     right_h = title_h + author_h + tags_h + stats_h + chapter_h + props_h + intro_h
     cover_h = 312
     main_h = max(cover_h, right_h)
-
-    # 预留一些冗余，避免不同字体/渲染差异导致裁切
     safety = 100
     return body_pad_y + card_pad_y + top_h + main_mt + main_h + safety
 
-def _render_html_to_png(*, html_str: str, size: tuple[int, int], output_dir: Path, filename: str) -> Path:
+
+def _render_html_to_png(
+    *, html_str: str, size: tuple[int, int], output_dir: Path, filename: str
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     if Html2Image is None:  # pragma: no cover
         err = globals().get("_HTML2IMAGE_IMPORT_ERROR")
-        raise RuntimeError(f"缺少依赖 html2image，无法渲染图片：{err!s}")
-    hti = Html2Image(
-        output_path=str(output_dir),
-    )
+        raise RuntimeError(
+            f"Missing dependency html2image, unable to render image: {err!s}"
+        )
+    hti = Html2Image(output_path=str(output_dir))
     try:
         hti.screenshot(html_str=html_str, save_as=filename, size=size)
-    except Exception as e:
-        raise RuntimeError(f"Html2Image 渲染失败：{e}") from e
+    except Exception as exc:
+        raise RuntimeError(f"Html2Image render failed: {exc}") from exc
     return output_dir / filename
 
 
@@ -97,18 +104,20 @@ def render_search_card(
 
     width = 1024
     height = _calc_search_card_height(len(items))
-
     query_badge = f"<div class='badge'>{html_escape(query)}</div>" if query else ""
 
     rows_html: list[str] = []
-    for idx, it in enumerate(items, start=1):
-        title = html_escape(it.get("title", ""))
-        author = html_escape(it.get("author", ""))
-        update_time = html_escape(it.get("update_time", ""))
-        desc = html_escape(it.get("description", ""))
-        read_url = html_escape(it.get("read_url", ""))
-
-        desc_html = f"<div class='desc'>{desc}</div>" if desc else "<div class='desc muted'>（无简介）</div>"
+    for idx, item in enumerate(items, start=1):
+        title = html_escape(item.get("title", ""))
+        author = html_escape(item.get("author", ""))
+        update_time = html_escape(item.get("update_time", ""))
+        desc = html_escape(item.get("description", ""))
+        read_url = html_escape(item.get("read_url", ""))
+        desc_html = (
+            f"<div class='desc'>{desc}</div>"
+            if desc
+            else "<div class='desc muted'>(No description)</div>"
+        )
         rows_html.append(
             f"""
             <div class="item">
@@ -264,7 +273,7 @@ def render_search_card(
       {query_badge}
     </div>
     <div class="list">
-      {''.join(rows_html)}
+      {"".join(rows_html)}
     </div>
     <div class="footer">Getcwm / Html2Image</div>
   </div>
@@ -273,7 +282,12 @@ def render_search_card(
 """
 
     filename = f"search_{uuid.uuid4().hex}.png"
-    out_path = _render_html_to_png(html_str=html_str, size=(width, height), output_dir=Path(output_dir), filename=filename)
+    out_path = _render_html_to_png(
+        html_str=html_str,
+        size=(width, height),
+        output_dir=Path(output_dir),
+        filename=filename,
+    )
     return str(out_path)
 
 
@@ -298,9 +312,7 @@ def render_book_details_card(
     prop_map = dict(details.get("data", {}) or {})
     prop_items = list(prop_map.items())[:8]
 
-    intro = (details.get("Brief_Introduction", "") or "").strip()
-    if not intro:
-        intro = "（无简介）"
+    intro = (details.get("Brief_Introduction", "") or "").strip() or "（无简介）"
 
     cover_data_uri = fetch_image_data_uri(str(cover_url), session=session)
     cover_html = (
@@ -309,12 +321,12 @@ def render_book_details_card(
         else "<div class='cover placeholder'>无封面</div>"
     )
 
-    tags_html = "".join([f"<span class='tag'>{html_escape(t)}</span>" for t in tag_list[:10]])
+    tags_html = "".join(
+        f"<span class='tag'>{html_escape(tag)}</span>" for tag in tag_list[:10]
+    )
     props_html = "".join(
-        [
-            f"<div class='kv'><div class='k'>{html_escape(k)}</div><div class='v'>{html_escape(v)}</div></div>"
-            for k, v in prop_items
-        ]
+        f"<div class='kv'><div class='k'>{html_escape(key)}</div><div class='v'>{html_escape(val)}</div></div>"
+        for key, val in prop_items
     )
 
     width = 1024
@@ -540,7 +552,12 @@ def render_book_details_card(
 """
 
     filename = f"book_{uuid.uuid4().hex}.png"
-    out_path = _render_html_to_png(html_str=html_str, size=(width, height), output_dir=Path(output_dir), filename=filename)
+    out_path = _render_html_to_png(
+        html_str=html_str,
+        size=(width, height),
+        output_dir=Path(output_dir),
+        filename=filename,
+    )
     return str(out_path)
 
 
@@ -767,5 +784,45 @@ def render_subscribe_update_card(
 """
 
     filename = f"update_{int(book_id)}_{uuid.uuid4().hex}.png"
-    out_path = _render_html_to_png(html_str=html_str, size=(width, height), output_dir=Path(output_dir), filename=filename)
+    out_path = _render_html_to_png(
+        html_str=html_str,
+        size=(width, height),
+        output_dir=Path(output_dir),
+        filename=filename,
+    )
     return str(out_path)
+
+
+def handle_search_html_content(
+    html_content: str,
+    *,
+    query: str | None = None,
+    output_dir: str | Path = "./renders",
+    max_items: int = 8,
+    return_data: bool = False,
+) -> str | CardRenderResult:
+    data = parse_search_html_content(html_content)
+    image_path = render_search_card(
+        data, query=query, max_items=max_items, output_dir=output_dir
+    )
+    return (
+        CardRenderResult(image_path=image_path, data=data)
+        if return_data
+        else image_path
+    )
+
+
+def handle_book_details_html_content(
+    html_content: str,
+    *,
+    output_dir: str | Path = "./renders",
+    return_data: bool = False,
+    session: Any | None = None,
+) -> str | CardRenderResult:
+    data = parse_book_details_html_content(html_content) or {}
+    image_path = render_book_details_card(data, output_dir=output_dir, session=session)
+    return (
+        CardRenderResult(image_path=image_path, data=data)
+        if return_data
+        else image_path
+    )
