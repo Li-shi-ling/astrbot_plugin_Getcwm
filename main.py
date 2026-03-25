@@ -25,7 +25,7 @@ from .src.core import (
     parse_search_html_content,
 )
 
-CWM_SUBSCRIBE_DEBUG = False  # 订阅相关 debug 日志开关（默认关闭）
+CWM_SUBSCRIBE_DEBUG = True  # 订阅相关 debug 日志开关（默认关闭）
 
 
 @register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件", "3.0.0")
@@ -33,11 +33,11 @@ class GetcwmPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self._cwm_client = CiweimaoClient()
-        data_dir = Path(StarTools.get_data_dir())
-        self._render_dir = data_dir / "renders"
+        self._data_dir = Path(StarTools.get_data_dir("Getcwm"))
+        self._render_dir = self._data_dir / "renders"
         self._max_search_items = 8
         self.interval_time = config.get("interval_time", 20)
-        self.subscribe_data_file = data_dir / "subscribe.json"
+        self.subscribe_data_file = self._data_dir / "subscribe.json"
         self.b2u: dict[int, list[str]] = {}
         self.u2b: dict[str, list[int]] = {}
         self.bmeta: dict[int, dict] = {}
@@ -96,6 +96,66 @@ class GetcwmPlugin(Star):
                 return False
             self.bmeta[int(book_id)] = normalized_meta
             return True
+
+    @staticmethod
+    def _dedupe_str_list(values: list) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = str(value).strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        return deduped
+
+    def _normalize_book_subscribers(
+        self, raw_data: dict | None
+    ) -> dict[int, list[str]]:
+        normalized: dict[int, list[str]] = {}
+        raw_map = raw_data if isinstance(raw_data, dict) else {}
+        for book_id, umos in raw_map.items():
+            try:
+                bid = int(book_id)
+            except Exception:
+                continue
+            if not isinstance(umos, list):
+                continue
+            deduped = self._dedupe_str_list(umos)
+            if deduped:
+                normalized[bid] = deduped
+        return normalized
+
+    def _normalize_book_meta_map(self, raw_data: dict | None) -> dict[int, dict]:
+        normalized: dict[int, dict] = {}
+        raw_map = raw_data if isinstance(raw_data, dict) else {}
+        for book_id, meta in raw_map.items():
+            try:
+                bid = int(book_id)
+            except Exception:
+                continue
+            if not isinstance(meta, dict):
+                continue
+            normalized[bid] = self._build_book_meta(
+                bid,
+                {
+                    "Works_Name": meta.get("title_text", meta.get("title", "")),
+                    "Chapter_Name": meta.get("chapter", ""),
+                    "Update_Time": meta.get("timestamp", -1),
+                },
+            )
+        return normalized
+
+    def _rebuild_session_books(
+        self, book_subscribers: dict[int, list[str]]
+    ) -> dict[str, list[int]]:
+        rebuilt: dict[str, list[int]] = {}
+        for book_id, umos in book_subscribers.items():
+            for umo in umos:
+                books = rebuilt.setdefault(str(umo), [])
+                if int(book_id) not in books:
+                    books.append(int(book_id))
+        return rebuilt
 
     # cwm 指令
     @filter.command_group("cwm")
@@ -887,15 +947,16 @@ class GetcwmPlugin(Star):
     async def _save_subscribe_data(self):
         """保存订阅数据"""
         async with self._subscribe_lock:
-            b2u = {str(k): list(v) for k, v in self.b2u.items()}
-            u2b = {str(k): list(v) for k, v in self.u2b.items()}
-            bmeta = {str(k): dict(v) for k, v in self.bmeta.items()}
-            books_count = len(b2u)
-            sessions_count = len(u2b)
-            links_count = sum(len(v) for v in b2u.values())
-            meta_count = len(bmeta)
+            subscriptions = {str(k): list(v) for k, v in self.b2u.items() if v}
+            book_meta = {str(k): dict(v) for k, v in self.bmeta.items() if v}
+            books_count = len(subscriptions)
+            sessions_count = len(self.u2b)
+            links_count = sum(len(v) for v in subscriptions.values())
+            meta_count = len(book_meta)
         payload = json.dumps(
-            {"b2u": b2u, "u2b": u2b, "bmeta": bmeta}, ensure_ascii=False
+            {"subscriptions": subscriptions, "book_meta": book_meta},
+            indent=4,
+            ensure_ascii=False,
         )
         CWM_SUBSCRIBE_DEBUG and logger.debug(
             "[cwm] 保存订阅数据：file=%s books=%s sessions=%s links=%s meta=%s payload_chars=%s",
@@ -908,12 +969,10 @@ class GetcwmPlugin(Star):
         )
         try:
             self.subscribe_data_file.parent.mkdir(parents=True, exist_ok=True)
-            temp_file = self.subscribe_data_file.with_suffix(
-                f"{self.subscribe_data_file.suffix}.tmp"
-            )
-            async with aiofiles.open(temp_file, "w", encoding="utf-8") as f:
+            async with aiofiles.open(
+                self.subscribe_data_file, "w", encoding="utf-8"
+            ) as f:
                 await f.write(payload)
-            await asyncio.to_thread(temp_file.replace, self.subscribe_data_file)
             CWM_SUBSCRIBE_DEBUG and logger.debug(
                 "[cwm] 保存订阅数据成功：file=%s", self.subscribe_data_file
             )
@@ -946,56 +1005,15 @@ class GetcwmPlugin(Star):
                         return out
                     raw = json.loads(content) or {}
 
-                    raw_b2u = raw.get("b2u", {}) or {}
-                    if not isinstance(raw_b2u, dict):
-                        raw_b2u = {}
-                    b2u: dict[int, list[str]] = {}
-                    for k, v in raw_b2u.items():
-                        try:
-                            bid = int(k)
-                        except Exception:
-                            continue
-                        if not isinstance(v, list):
-                            continue
-                        umos = [str(x) for x in v if x]
-                        seen: set[str] = set()
-                        dedup: list[str] = []
-                        for u in umos:
-                            if u in seen:
-                                continue
-                            seen.add(u)
-                            dedup.append(u)
-                        b2u[bid] = dedup
-
-                    u2b: dict[str, list[int]] = {}
-                    for bid, umos in b2u.items():
-                        for umo in umos:
-                            ids = u2b.setdefault(umo, [])
-                            if bid not in ids:
-                                ids.append(bid)
-
-                    raw_bmeta = raw.get("bmeta", {}) or {}
-                    if not isinstance(raw_bmeta, dict):
-                        raw_bmeta = {}
-                    bmeta: dict[int, dict] = {}
-                    for k, v in raw_bmeta.items():
-                        try:
-                            bid = int(k)
-                        except Exception:
-                            continue
-                        if not isinstance(v, dict):
-                            continue
-                        bmeta[bid] = self._build_book_meta(
-                            bid,
-                            {
-                                "Works_Name": v.get("title_text", v.get("title", "")),
-                                "Chapter_Name": v.get("chapter", ""),
-                                "Update_Time": v.get("timestamp", -1),
-                            },
-                        )
+                    b2u = self._normalize_book_subscribers(
+                        raw.get("subscriptions", raw.get("b2u", {}))
+                    )
+                    bmeta = self._normalize_book_meta_map(
+                        raw.get("book_meta", raw.get("bmeta", {}))
+                    )
 
                     out["b2u"] = b2u
-                    out["u2b"] = u2b
+                    out["u2b"] = self._rebuild_session_books(b2u)
                     out["bmeta"] = bmeta
             else:
                 CWM_SUBSCRIBE_DEBUG and logger.debug(
