@@ -99,8 +99,8 @@ def extract_chapter_info(update_text: str) -> tuple[str, int]:
         chapter_part = re.sub(r"\s+", " ", chapter_part).strip()
         break
 
-    chapter_part = re.sub(r"^[\s/|:：-–—]+", "", chapter_part).strip()
-    chapter_part = re.sub(r"[\s/|:：-–—]+$", "", chapter_part).strip()
+    chapter_part = re.sub(r"^[\s/|:：–—-]+", "", chapter_part).strip()
+    chapter_part = re.sub(r"[\s/|:：–—-]+$", "", chapter_part).strip()
     return chapter_part, ts
 
 
@@ -385,6 +385,7 @@ class CiweimaoClient:
                 exc,
             )
             raise
+
         elapsed_ms = int((time.perf_counter() - start_t) * 1000)
         content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
         try:
@@ -428,6 +429,7 @@ class CiweimaoClient:
                 exc,
             )
             raise
+
         elapsed_ms = int((time.perf_counter() - start_t) * 1000)
         content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
         final_url = getattr(resp, "url", None)
