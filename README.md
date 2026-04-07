@@ -28,3 +28,5 @@
  - **版本**：v1.0.9
  - **标语**：cwm有些小说还是挺好看的
  - **QQ群**: 1083090761 
+
+[![Moe Counter](https://count.getloli.com/get/@li-shi-ling?theme=minecraft)](https://github.com/Li-shi-ling/astrbot_plugin_Getcwm)
