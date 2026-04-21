@@ -26,7 +26,6 @@ from .src.core import (
     parse_search_html_content,
 )
 
-CWM_SUBSCRIBE_DEBUG = True  # 订阅相关 debug 日志开关（默认关闭）
 
 @register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件", "3.0.0")
 class GetcwmPlugin(Star):
@@ -37,6 +36,7 @@ class GetcwmPlugin(Star):
         self._render_dir = self._data_dir / "renders"
         self._max_search_items = 8
         self.interval_time = config.get("interval_time", 20)
+        self.subscribe_debug = bool(config.get("CWM_SUBSCRIBE_DEBUG", False))
         self.subscribe_data_file = self._data_dir / "subscribe.json"
         self.b2u: dict[int, list[str]] = {}
         self.u2b: dict[str, list[int]] = {}
@@ -47,52 +47,13 @@ class GetcwmPlugin(Star):
         self.subscribe_task: asyncio.Task | None = None
         self.subscribe_running = True
 
-    def _get_raw_message_for_fc_routing(self, event: AstrMessageEvent) -> str:
-        message_obj = getattr(event, "message_obj", None)
-        message_obj_text = ""
-        if message_obj is not None:
-            message_obj_text = str(getattr(message_obj, "message_str", "") or "").strip()
-        if message_obj_text:
-            return message_obj_text
-        return str(getattr(event, "message_str", "") or "").strip()
-
-    def _rewrite_event_message_for_fc(
+    def _prepare_fc_request(
         self, event: AstrMessageEvent, *, original_message: str, query: str
     ) -> None:
-        rewritten_message = (
-            query.strip()
-            or "Please use the cwm search tool to help the user search Ciweimao."
-        )
-        event.message_str = rewritten_message
-        if getattr(event, "message_obj", None) is not None:
-            event.message_obj.message_str = rewritten_message
+        normalized_query = query.strip()
         event.set_extra("getcwm_fc_routed", True)
         event.set_extra("getcwm_fc_original_message", original_message)
-        event.set_extra("getcwm_fc_query", query.strip())
-
-    def _try_route_fc_command(self, event: AstrMessageEvent, message_text: str) -> bool:
-        normalized_message = str(message_text or "").strip()
-        if not normalized_message:
-            return False
-
-        match = re.match(r"^/?cwm\s+fc(?:\s+(.*))?$", normalized_message, re.IGNORECASE)
-        if match is None:
-            return False
-
-        query = str(match.group(1) or "").strip()
-        self._rewrite_event_message_for_fc(
-            event,
-            original_message=normalized_message,
-            query=query,
-        )
-        return True
-
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
-    async def route_fc_command(self, event: AstrMessageEvent):
-        raw_message = self._get_raw_message_for_fc_routing(event)
-        if not raw_message or bool(event.get_extra("getcwm_fc_routed", False)):
-            return
-        self._try_route_fc_command(event, raw_message)
+        event.set_extra("getcwm_fc_query", normalized_query)
 
     @filter.on_llm_request(priority=-100)
     async def inject_fc_search_tool(
@@ -100,7 +61,18 @@ class GetcwmPlugin(Star):
     ) -> None:
         if not bool(event.get_extra("getcwm_fc_routed", False)):
             return
-        req.prompt = str(getattr(event, "message_str", "") or "").strip()
+        query = str(event.get_extra("getcwm_fc_query", "") or "").strip()
+        injection_prompt = (
+            f"\u7528\u6237\u60f3\u8fdb\u884c\u5c0f\u8bf4\u641c\u7d22\u00b7{{{query}}}\u00b7\u8bf7\u4f7f\u7528cwm_search_books\u8fdb\u884c\u641c\u7d22"
+            if query
+            else "\u7528\u6237\u60f3\u8fdb\u884c\u5c0f\u8bf4\u641c\u7d22\u00b7{}\u00b7\u8bf7\u4f7f\u7528cwm_search_books\u8fdb\u884c\u641c\u7d22"
+        )
+        existing_system_prompt = str(getattr(req, "system_prompt", "") or "").strip()
+        req.system_prompt = (
+            f"{existing_system_prompt}\n\n{injection_prompt}".strip()
+            if existing_system_prompt
+            else injection_prompt
+        )
         self._add_fc_search_tool(req)
 
     @filter.llm_tool(name="cwm_search_books")
@@ -110,8 +82,8 @@ class GetcwmPlugin(Star):
         """Search Ciweimao books and return AI-usable JSON results.
         Args:
             keyword(string): Search keyword for Ciweimao books.
-            page(int): Search result page number.
-            max_items(int): Maximum result items to return.
+            page(int, optional): Optional search result page number. Defaults to 1.
+            max_items(int, optional): Optional maximum result items to return. Defaults to 5.
         """
         query = str(keyword or "").strip()
         if not query:
@@ -157,9 +129,10 @@ class GetcwmPlugin(Star):
 
     def _add_fc_search_tool(self, req: ProviderRequest) -> None:
         tool_manager = self.context.get_llm_tool_manager()
-        tool = tool_manager.get_func("cwm_search_books")
+        tool_name = "cwm_search_books"
+        tool = tool_manager.get_func(tool_name)
         if tool is None:
-            logger.warning("Getcwm FC tool not found: %s", "cwm_search_books")
+            logger.warning("Getcwm FC tool not found: %s", tool_name)
             return
         if req.func_tool is None:
             req.func_tool = ToolSet()
@@ -294,6 +267,16 @@ class GetcwmPlugin(Star):
             "/cwm 测试推送                      强制向当前会话推送订阅更新(管理员,用于测试)",
         ]
         yield event.plain_result("\n".join(help_text))
+
+    @cwm.command("fc")
+    async def fc(self, event: AstrMessageEvent, query: str = ""):
+        """Route the current request to LLM and inject the Ciweimao search tool."""
+        original_message = str(getattr(event, "message_str", "") or "").strip()
+        self._prepare_fc_request(
+            event,
+            original_message=original_message,
+            query=str(query or "").strip(),
+        )
 
     @cwm.command("搜索")
     async def search(self, event: AstrMessageEvent, book_name: str, page: int = 1):
@@ -556,7 +539,7 @@ class GetcwmPlugin(Star):
             support_proactive = False
 
         if not support_proactive:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 订阅被拒绝：不支持主动消息。book_id=%s umo=%s",
                 book_id,
                 getattr(event, "unified_msg_origin", None),
@@ -565,16 +548,16 @@ class GetcwmPlugin(Star):
 
         bid = int(book_id)
         umo = str(event.unified_msg_origin)
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 订阅请求：book_id=%s umo=%s", bid, umo
         )
 
         latest_meta = await self._fetch_latest_meta(bid)
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 订阅基线获取完成：book_id=%s meta=%s", bid, latest_meta
         )
         if latest_meta is None:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 订阅失败：基线元数据缺失。book_id=%s umo=%s", bid, umo
             )
             return f"订阅失败：未能获取书籍信息（ID：{bid}）"
@@ -606,7 +589,7 @@ class GetcwmPlugin(Star):
             after_book_subscribers = len(self.b2u.get(bid, []) or [])
             after_umo_books = len(self.u2b.get(umo, []) or [])
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 订阅更新完成：book_id=%s umo=%s added_umo=%s added_book=%s meta_updated=%s book_subscribers=%s->%s umo_books=%s->%s",
             bid,
             umo,
@@ -619,11 +602,11 @@ class GetcwmPlugin(Star):
             after_umo_books,
         )
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 持久化订阅数据：file=%s", self.subscribe_data_file
         )
         await self._save_subscribe_data()
-        CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 确保定时任务运行中")
+        self.subscribe_debug and logger.debug("[cwm] 确保定时任务运行中")
         await self.start_subscribe_task()
 
         title = (
@@ -641,14 +624,14 @@ class GetcwmPlugin(Star):
         target_umo = current_umo if not (umo and str(umo).strip()) else str(umo).strip()
 
         if target_umo != current_umo and not event.is_admin():
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 订阅列表被拒绝：非管理员查询其他会话。current_umo=%s target_umo=%s",
                 current_umo,
                 target_umo,
             )
             return "权限不足：仅管理员可指定其他会话"
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 订阅列表请求：current_umo=%s target_umo=%s", current_umo, target_umo
         )
 
@@ -659,7 +642,7 @@ class GetcwmPlugin(Star):
             }
 
         if not book_ids:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 订阅列表为空：target_umo=%s", target_umo
             )
             return "当前会话暂无订阅" if target_umo == current_umo else "该会话暂无订阅"
@@ -716,7 +699,7 @@ class GetcwmPlugin(Star):
             lines.append(f"   链接：https://www.ciweimao.com/book/{int(bid)}")
 
         out = "\n".join(lines).strip()
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 订阅列表获取成功：target_umo=%s books=%s chars=%s",
             target_umo,
             len(book_ids),
@@ -732,7 +715,7 @@ class GetcwmPlugin(Star):
         target_umo = current_umo if not (umo and str(umo).strip()) else str(umo).strip()
 
         if target_umo != current_umo and not event.is_admin():
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 取消订阅被拒绝：非管理员操作其他会话。current_umo=%s target_umo=%s book_id=%s",
                 current_umo,
                 target_umo,
@@ -740,7 +723,7 @@ class GetcwmPlugin(Star):
             )
             return "权限不足：仅管理员可指定其他会话"
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 取消订阅请求：book_id=%s current_umo=%s target_umo=%s",
             bid,
             current_umo,
@@ -792,7 +775,7 @@ class GetcwmPlugin(Star):
             remaining_subscribed_books = len(self.b2u)
             should_stop_task = remaining_subscribed_books <= 0
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 取消订阅更新完成：book_id=%s target_umo=%s removed_from_book=%s removed_from_session=%s book_subscribers=%s->%s session_books=%s->%s remaining_books=%s",
             bid,
             target_umo,
@@ -808,13 +791,13 @@ class GetcwmPlugin(Star):
         if not removed_from_book and not removed_from_session:
             return f"取消订阅失败：该会话未订阅该书（ID：{bid}）"
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 持久化取消订阅数据：file=%s", self.subscribe_data_file
         )
         await self._save_subscribe_data()
 
         if should_stop_task:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 取消订阅：无任何订阅，停止定时任务"
             )
             self.subscribe_running = False
@@ -825,11 +808,11 @@ class GetcwmPlugin(Star):
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    CWM_SUBSCRIBE_DEBUG and logger.debug(
+                    self.subscribe_debug and logger.debug(
                         "[cwm] 取消订阅：停止任务等待时出现异常：%s", e
                     )
         else:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 取消订阅：仍有订阅，确保定时任务运行中"
             )
             await self.start_subscribe_task()
@@ -841,7 +824,7 @@ class GetcwmPlugin(Star):
         return f"已取消订阅：{title_str}{session_suffix}{extra}"
 
     async def _get_all_subscribe_pairs_text(self) -> str:
-        CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 全部订阅请求")
+        self.subscribe_debug and logger.debug("[cwm] 全部订阅请求")
         async with self._subscribe_lock:
             pairs: list[tuple[str, int]] = []
             for umo, bids in (self.u2b or {}).items():
@@ -854,7 +837,7 @@ class GetcwmPlugin(Star):
                         continue
 
         if not pairs:
-            CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 全部订阅为空")
+            self.subscribe_debug and logger.debug("[cwm] 全部订阅为空")
             return "暂无任何订阅"
 
         pairs.sort(key=lambda x: (x[0], x[1]))
@@ -869,13 +852,13 @@ class GetcwmPlugin(Star):
             lines.append(f"{umo}:{bid}")
 
         out = "\n".join(lines).strip()
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 全部订阅获取成功：pairs=%s chars=%s", len(pairs), len(out)
         )
         return out
 
     async def _fetch_latest_meta(self, book_id: int) -> dict | None:
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 获取最新元数据开始：book_id=%s", book_id
         )
         try:
@@ -883,7 +866,7 @@ class GetcwmPlugin(Star):
             html = await self._run_sync(self._cwm_client.get_book_details, bid)
             data = parse_book_details_html_content(html) or {}
             meta = self._build_book_meta(bid, data)
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 获取最新元数据成功：book_id=%s ts=%s chapter=%s title=%s",
                 book_id,
                 meta["timestamp"],
@@ -893,7 +876,7 @@ class GetcwmPlugin(Star):
             return meta
         except Exception as e:
             logger.error(f"[Getcwm] 获取订阅基线失败 book_id={book_id}: {e}")
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 获取最新元数据失败：book_id=%s err=%s", book_id, e
             )
             return None
@@ -1016,7 +999,7 @@ class GetcwmPlugin(Star):
     # 持久化数据相关
     # 异步初始化函数
     async def initialize(self):
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 初始化：加载订阅数据。file=%s", self.subscribe_data_file
         )
         subscribe_data = await self._load_subscribe_data()
@@ -1024,7 +1007,7 @@ class GetcwmPlugin(Star):
         self.u2b = subscribe_data.get("u2b", {}) or {}
         self.bmeta = subscribe_data.get("bmeta", {}) or {}
         total_links = sum(len(v) for v in (self.b2u or {}).values())
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 初始化：订阅数据加载完成。books=%s sessions=%s links=%s meta=%s",
             len(self.b2u or {}),
             len(self.u2b or {}),
@@ -1035,28 +1018,28 @@ class GetcwmPlugin(Star):
 
     # 异步卸载函数
     async def terminate(self):
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 终止：停止订阅任务。running=%s task=%s",
             self.subscribe_running,
             self.subscribe_task,
         )
         self.subscribe_running = False
         if self.subscribe_task and not self.subscribe_task.done():
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 终止：取消订阅任务。task=%s", self.subscribe_task
             )
             self.subscribe_task.cancel()
             try:
                 await self.subscribe_task
             except asyncio.CancelledError:
-                CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 终止：订阅任务已取消")
+                self.subscribe_debug and logger.debug("[cwm] 终止：订阅任务已取消")
                 pass
             except Exception as e:
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 终止：订阅任务取消等待时出现异常：%s", e
                 )
                 pass
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 终止：持久化订阅数据。file=%s", self.subscribe_data_file
         )
         await self._save_subscribe_data()
@@ -1076,7 +1059,7 @@ class GetcwmPlugin(Star):
             indent=4,
             ensure_ascii=False,
         )
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 保存订阅数据：file=%s books=%s sessions=%s links=%s meta=%s payload_chars=%s",
             self.subscribe_data_file,
             books_count,
@@ -1091,12 +1074,12 @@ class GetcwmPlugin(Star):
                 self.subscribe_data_file, "w", encoding="utf-8"
             ) as f:
                 await f.write(payload)
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 保存订阅数据成功：file=%s", self.subscribe_data_file
             )
         except OSError as e:
             logger.error(f"保存订阅数据失败: {e}")
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 保存订阅数据失败：file=%s err=%s", self.subscribe_data_file, e
             )
 
@@ -1105,7 +1088,7 @@ class GetcwmPlugin(Star):
         """异步加载订阅数据"""
         out = {"b2u": {}, "u2b": {}, "bmeta": {}}
         try:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 加载订阅数据：file=%s", self.subscribe_data_file
             )
             if self.subscribe_data_file.exists():
@@ -1113,11 +1096,11 @@ class GetcwmPlugin(Star):
                     self.subscribe_data_file, encoding="utf-8"
                 ) as f:
                     content = await f.read()
-                    CWM_SUBSCRIBE_DEBUG and logger.debug(
+                    self.subscribe_debug and logger.debug(
                         "[cwm] 加载订阅数据：读取成功。chars=%s", len(content)
                     )
                     if not content.strip():
-                        CWM_SUBSCRIBE_DEBUG and logger.debug(
+                        self.subscribe_debug and logger.debug(
                             "[cwm] 加载订阅数据：文件为空，使用默认值"
                         )
                         return out
@@ -1134,12 +1117,12 @@ class GetcwmPlugin(Star):
                     out["u2b"] = self._rebuild_session_books(b2u)
                     out["bmeta"] = bmeta
             else:
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 加载订阅数据：文件不存在，使用默认值"
                 )
 
             links_count = sum(len(v) for v in (out.get("b2u", {}) or {}).values())
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 加载订阅数据成功：books=%s sessions=%s links=%s meta=%s",
                 len(out.get("b2u", {}) or {}),
                 len(out.get("u2b", {}) or {}),
@@ -1149,13 +1132,13 @@ class GetcwmPlugin(Star):
             return out
         except (json.JSONDecodeError, OSError) as e:
             logger.error(f"加载订阅数据失败: {e}")
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 加载订阅数据失败：file=%s err=%s", self.subscribe_data_file, e
             )
             return out
         except Exception as e:
             logger.error(f"加载订阅数据失败: {e}")
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 加载订阅数据意外错误：file=%s err=%s",
                 self.subscribe_data_file,
                 e,
@@ -1167,19 +1150,19 @@ class GetcwmPlugin(Star):
         """启动定时订阅任务"""
         if self.subscribe_task:
             try:
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 启动订阅任务：当前任务状态。task=%s done=%s cancelled=%s",
                     self.subscribe_task,
                     self.subscribe_task.done(),
                     self.subscribe_task.cancelled(),
                 )
             except Exception:
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 启动订阅任务：当前任务状态。task=%s", self.subscribe_task
                 )
 
         if self.subscribe_task and not self.subscribe_task.done():
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 启动订阅任务：保留现有运行中的任务"
             )
             return self.subscribe_task
@@ -1189,13 +1172,13 @@ class GetcwmPlugin(Star):
             interval_min = max(1, int(self.interval_time or 0))
         except Exception:
             interval_min = 20
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 启动订阅任务：创建新任务。interval_min=%s", interval_min
         )
         self.subscribe_task = asyncio.create_task(
             self._periodic_subscribe(self.interval_time)
         )
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 启动订阅任务：任务创建成功。task=%s", self.subscribe_task
         )
         return self.subscribe_task
@@ -1203,14 +1186,14 @@ class GetcwmPlugin(Star):
     # 定时订阅任务
     async def _periodic_subscribe(self, interval_time=20):
         """可控制的订阅"""
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 定时订阅任务启动：interval_time=%s", interval_time
         )
         while self.subscribe_running:
             try:
                 # 等待指定时间
                 interval_min = max(1, int(interval_time or 0))
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 定时订阅任务休眠：minutes=%s running=%s",
                     interval_min,
                     self.subscribe_running,
@@ -1219,29 +1202,29 @@ class GetcwmPlugin(Star):
 
                 # 检查是否还在运行
                 if not self.subscribe_running:
-                    CWM_SUBSCRIBE_DEBUG and logger.debug(
+                    self.subscribe_debug and logger.debug(
                         "[cwm] 定时订阅任务在执行更新前停止"
                     )
                     break
 
                 # 执行订阅检测
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 定时订阅任务唤醒：执行更新检测"
                 )
                 await self._check_updates()
 
             except asyncio.CancelledError:
                 # 任务被取消
-                CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 定时订阅任务被取消")
+                self.subscribe_debug and logger.debug("[cwm] 定时订阅任务被取消")
                 break
             except Exception as e:
                 # 记录错误但不停止任务
                 logger.error(f"[Getcwm] 订阅检测任务出错: {e}")
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 定时订阅任务出错，60秒后重试：err=%s", e
                 )
                 await asyncio.sleep(60)  # 出错后等待1分钟再重试
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 定时订阅任务退出：running=%s", self.subscribe_running
         )
 
@@ -1250,15 +1233,15 @@ class GetcwmPlugin(Star):
             book_ids = list(self.b2u.keys())
 
         if not book_ids:
-            CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 更新检测：无订阅书籍，跳过")
+            self.subscribe_debug and logger.debug("[cwm] 更新检测：无订阅书籍，跳过")
             return
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 更新检测：开始。books=%s", len(book_ids)
         )
         dirty = False
         for bid in book_ids:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 更新检测：获取详情。book_id=%s", bid
             )
             try:
@@ -1266,14 +1249,14 @@ class GetcwmPlugin(Star):
                 details = parse_book_details_html_content(html) or {}
             except Exception as e:
                 logger.error(f"[cwm] 获取订阅详情失败 book_id={bid}: {e}")
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 更新检测：获取详情失败。book_id=%s err=%s", bid, e
                 )
                 continue
 
             new_ts = self._safe_int(details.get("Update_Time"))
             if new_ts <= 0:
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 更新检测：更新时间无效，跳过。book_id=%s update_time=%s",
                     bid,
                     new_ts,
@@ -1285,7 +1268,7 @@ class GetcwmPlugin(Star):
 
             async with self._subscribe_lock:
                 subscribers = list(self.b2u.get(int(bid), []) or [])
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 更新检测：加载订阅者。book_id=%s subscribers=%s",
                     bid,
                     len(subscribers),
@@ -1293,7 +1276,7 @@ class GetcwmPlugin(Star):
                 if not subscribers:
                     self.bmeta.pop(int(bid), None)
                     dirty = True
-                    CWM_SUBSCRIBE_DEBUG and logger.debug(
+                    self.subscribe_debug and logger.debug(
                         "[cwm] 更新检测：无订阅者，清理元数据。book_id=%s", bid
                     )
                     continue
@@ -1301,7 +1284,7 @@ class GetcwmPlugin(Star):
                 old_meta = dict(self.bmeta.get(int(bid), {}) or {})
                 old_ts = self._safe_int(old_meta.get("timestamp"))
                 old_chapter = str(old_meta.get("chapter", "") or "")
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 更新检测：比较元数据。book_id=%s old_ts=%s new_ts=%s old_chapter=%s new_chapter=%s",
                     bid,
                     old_ts,
@@ -1313,30 +1296,30 @@ class GetcwmPlugin(Star):
                 if old_ts <= 0:
                     self.bmeta[int(bid)] = new_meta
                     dirty = True
-                    CWM_SUBSCRIBE_DEBUG and logger.debug(
+                    self.subscribe_debug and logger.debug(
                         "[cwm] 更新检测：基线缺失，仅设置基线。book_id=%s", bid
                     )
                     continue
 
                 if new_ts < old_ts:
-                    CWM_SUBSCRIBE_DEBUG and logger.debug(
+                    self.subscribe_debug and logger.debug(
                         "[cwm] 更新检测：新时间戳更旧，跳过。book_id=%s", bid
                     )
                     continue
 
                 if new_ts == old_ts and (not new_chapter or new_chapter == old_chapter):
-                    CWM_SUBSCRIBE_DEBUG and logger.debug(
+                    self.subscribe_debug and logger.debug(
                         "[cwm] 更新检测：无变化，跳过。book_id=%s", bid
                     )
                     continue
 
                 self.bmeta[int(bid)] = new_meta
                 dirty = True
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 更新检测：检测到更新，准备推送。book_id=%s", bid
                 )
 
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 更新检测：推送更新。book_id=%s subscribers=%s",
                 bid,
                 len(subscribers),
@@ -1344,12 +1327,12 @@ class GetcwmPlugin(Star):
             await self._push_update(int(bid), details, subscribers, old_meta=old_meta)
 
         if dirty:
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 更新检测：元数据已变更，保存订阅数据"
             )
             await self._save_subscribe_data()
         else:
-            CWM_SUBSCRIBE_DEBUG and logger.debug("[cwm] 更新检测：完成，无变更")
+            self.subscribe_debug and logger.debug("[cwm] 更新检测：完成，无变更")
 
     async def _push_update(
         self,
@@ -1362,7 +1345,7 @@ class GetcwmPlugin(Star):
         update_text = self._format_subscribe_update_text(
             book_id, details, old_meta=old_meta
         )
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 推送更新：开始。book_id=%s subscribers=%s text_chars=%s has_old_meta=%s",
             book_id,
             len(subscribers or []),
@@ -1379,14 +1362,14 @@ class GetcwmPlugin(Star):
                 output_dir=self._render_dir,
                 session=self._cwm_client.session,
             )
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 推送更新：卡片渲染完成。book_id=%s image_path=%s",
                 book_id,
                 image_path,
             )
         except Exception as e:
             logger.error(f"[Getcwm] 订阅更新卡片渲染失败 book_id={book_id}: {e}")
-            CWM_SUBSCRIBE_DEBUG and logger.debug(
+            self.subscribe_debug and logger.debug(
                 "[cwm] 推送更新：卡片渲染失败。book_id=%s err=%s", book_id, e
             )
 
@@ -1394,7 +1377,7 @@ class GetcwmPlugin(Star):
         has_image = bool(image_path and Path(str(image_path)).exists())
         if has_image:
             chain.file_image(str(image_path))
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 推送更新：消息链构建完成。book_id=%s has_image=%s chain_len=%s",
             book_id,
             has_image,
@@ -1405,25 +1388,25 @@ class GetcwmPlugin(Star):
         failed = 0
         for umo in subscribers:
             try:
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 推送更新：发送中。book_id=%s umo=%s", book_id, umo
                 )
                 await self._send_proactive_message(str(umo), chain)
                 ok += 1
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 推送更新：发送成功。book_id=%s umo=%s", book_id, umo
                 )
             except Exception as e:
                 failed += 1
                 logger.error(f"[cwm] 推送失败 book_id={book_id} umo={umo}: {e}")
-                CWM_SUBSCRIBE_DEBUG and logger.debug(
+                self.subscribe_debug and logger.debug(
                     "[cwm] 推送更新：发送失败。book_id=%s umo=%s err=%s",
                     book_id,
                     umo,
                     e,
                 )
 
-        CWM_SUBSCRIBE_DEBUG and logger.debug(
+        self.subscribe_debug and logger.debug(
             "[cwm] 推送更新：完成。book_id=%s ok=%s failed=%s", book_id, ok, failed
         )
 

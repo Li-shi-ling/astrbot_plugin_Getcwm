@@ -4,5 +4,11 @@
     "type": "int",
     "default": 20,
     "hint": "例如：60"
+  },
+  "CWM_SUBSCRIBE_DEBUG": {
+    "description": "Enable debug logging for subscription workflow.",
+    "type": "bool",
+    "default": false,
+    "hint": "Set to true to print subscription debug logs."
   }
 }
