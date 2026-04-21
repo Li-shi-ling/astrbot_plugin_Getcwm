@@ -8,9 +8,10 @@ from pathlib import Path
 import aiofiles
 
 import astrbot.api.message_components as Comp
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig, ToolSet, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType
+from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 
 from .src.cards import (
@@ -26,7 +27,6 @@ from .src.core import (
 )
 
 CWM_SUBSCRIBE_DEBUG = True  # 订阅相关 debug 日志开关（默认关闭）
-
 
 @register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件", "3.0.0")
 class GetcwmPlugin(Star):
@@ -46,6 +46,124 @@ class GetcwmPlugin(Star):
         # 订阅任务相关
         self.subscribe_task: asyncio.Task | None = None
         self.subscribe_running = True
+
+    def _get_raw_message_for_fc_routing(self, event: AstrMessageEvent) -> str:
+        message_obj = getattr(event, "message_obj", None)
+        message_obj_text = ""
+        if message_obj is not None:
+            message_obj_text = str(getattr(message_obj, "message_str", "") or "").strip()
+        if message_obj_text:
+            return message_obj_text
+        return str(getattr(event, "message_str", "") or "").strip()
+
+    def _rewrite_event_message_for_fc(
+        self, event: AstrMessageEvent, *, original_message: str, query: str
+    ) -> None:
+        rewritten_message = (
+            query.strip()
+            or "Please use the cwm search tool to help the user search Ciweimao."
+        )
+        event.message_str = rewritten_message
+        if getattr(event, "message_obj", None) is not None:
+            event.message_obj.message_str = rewritten_message
+        event.set_extra("getcwm_fc_routed", True)
+        event.set_extra("getcwm_fc_original_message", original_message)
+        event.set_extra("getcwm_fc_query", query.strip())
+
+    def _try_route_fc_command(self, event: AstrMessageEvent, message_text: str) -> bool:
+        normalized_message = str(message_text or "").strip()
+        if not normalized_message:
+            return False
+
+        match = re.match(r"^/?cwm\s+fc(?:\s+(.*))?$", normalized_message, re.IGNORECASE)
+        if match is None:
+            return False
+
+        query = str(match.group(1) or "").strip()
+        self._rewrite_event_message_for_fc(
+            event,
+            original_message=normalized_message,
+            query=query,
+        )
+        return True
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
+    async def route_fc_command(self, event: AstrMessageEvent):
+        raw_message = self._get_raw_message_for_fc_routing(event)
+        if not raw_message or bool(event.get_extra("getcwm_fc_routed", False)):
+            return
+        self._try_route_fc_command(event, raw_message)
+
+    @filter.on_llm_request(priority=-100)
+    async def inject_fc_search_tool(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ) -> None:
+        if not bool(event.get_extra("getcwm_fc_routed", False)):
+            return
+        req.prompt = str(getattr(event, "message_str", "") or "").strip()
+        self._add_fc_search_tool(req)
+
+    @filter.llm_tool(name="cwm_search_books")
+    async def cwm_search_books(
+        self, event: AstrMessageEvent, keyword: str, page: int = 1, max_items: int = 5
+    ) -> str:
+        """Search Ciweimao books and return AI-usable JSON results.
+        Args:
+            keyword(string): Search keyword for Ciweimao books.
+            page(int): Search result page number.
+            max_items(int): Maximum result items to return.
+        """
+        query = str(keyword or "").strip()
+        if not query:
+            return json.dumps(
+                {
+                    "query": "",
+                    "page": 1,
+                    "results": [],
+                    "error": "keyword is required",
+                },
+                ensure_ascii=False,
+            )
+
+        safe_page = max(1, self._safe_int(page, 1))
+        safe_limit = max(1, min(10, self._safe_int(max_items, 5)))
+        html = await self._run_sync(self._cwm_client.search_name, query, safe_page)
+        items = parse_search_html_content(html)
+
+        results: list[dict[str, object]] = []
+        for item in items[:safe_limit]:
+            read_url = str(item.get("read_url", "") or "")
+            results.append(
+                {
+                    "title": str(item.get("title", "") or ""),
+                    "author": str(item.get("author", "") or ""),
+                    "update_time": str(item.get("update_time", "") or ""),
+                    "description": str(item.get("description", "") or ""),
+                    "read_url": read_url,
+                    "book_id": self._extract_book_id(read_url),
+                }
+            )
+
+        return json.dumps(
+            {
+                "query": query,
+                "page": safe_page,
+                "total_results": len(items),
+                "returned_results": len(results),
+                "results": results,
+            },
+            ensure_ascii=False,
+        )
+
+    def _add_fc_search_tool(self, req: ProviderRequest) -> None:
+        tool_manager = self.context.get_llm_tool_manager()
+        tool = tool_manager.get_func("cwm_search_books")
+        if tool is None:
+            logger.warning("Getcwm FC tool not found: %s", "cwm_search_books")
+            return
+        if req.func_tool is None:
+            req.func_tool = ToolSet()
+        req.func_tool.add_tool(tool)
 
     @staticmethod
     def _safe_int(value, default: int = -1) -> int:
