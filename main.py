@@ -60,12 +60,14 @@ class GetcwmPlugin(Star):
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         if not bool(event.get_extra("getcwm_fc_routed", False)):
+            if req.func_tool is not None:
+                req.func_tool.remove_tool("cwm_search_books")
             return
         query = str(event.get_extra("getcwm_fc_query", "") or "").strip()
         injection_prompt = (
-            f"\u7528\u6237\u60f3\u8fdb\u884c\u5c0f\u8bf4\u641c\u7d22\u00b7{{{query}}}\u00b7\u8bf7\u4f7f\u7528cwm_search_books\u8fdb\u884c\u641c\u7d22"
+            f"用户想进行小说搜索`{query}`请使用cwm_search_books进行搜索"
             if query
-            else "\u7528\u6237\u60f3\u8fdb\u884c\u5c0f\u8bf4\u641c\u7d22\u00b7{}\u00b7\u8bf7\u4f7f\u7528cwm_search_books\u8fdb\u884c\u641c\u7d22"
+            else "用户想进行小说搜索`{}`请使用cwm_search_books进行搜索"
         )
         existing_system_prompt = str(getattr(req, "system_prompt", "") or "").strip()
         req.system_prompt = (
