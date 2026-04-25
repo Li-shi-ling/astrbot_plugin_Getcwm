@@ -1,7 +1,9 @@
 import asyncio
 import functools
 import json
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +11,7 @@ import aiofiles
 
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, ToolSet, logger
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType
 from astrbot.api.provider import ProviderRequest
@@ -32,8 +35,8 @@ class GetcwmPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self._cwm_client = CiweimaoClient()
-        self._data_dir = Path(StarTools.get_data_dir("Getcwm"))
-        self._render_dir = self._data_dir / "renders"
+        self._data_dir = Path(StarTools.get_data_dir())
+        self._render_dir = Path(get_astrbot_temp_path()) / "Getcwm"
         self._max_search_items = 8
         self.interval_time = config.get("interval_time", 20)
         self.subscribe_debug = bool(config.get("CWM_SUBSCRIBE_DEBUG", False))
@@ -42,6 +45,7 @@ class GetcwmPlugin(Star):
         self.u2b: dict[str, list[int]] = {}
         self.bmeta: dict[int, dict] = {}
         self._subscribe_lock = asyncio.Lock()
+        self._subscribe_data_dirty = False
 
         # 订阅任务相关
         self.subscribe_task: asyncio.Task | None = None
@@ -1041,49 +1045,92 @@ class GetcwmPlugin(Star):
                     "[cwm] 终止：订阅任务取消等待时出现异常：%s", e
                 )
                 pass
-        self.subscribe_debug and logger.debug(
-            "[cwm] 终止：持久化订阅数据。file=%s", self.subscribe_data_file
-        )
-        await self._save_subscribe_data()
+        if self._subscribe_data_dirty:
+            self.subscribe_debug and logger.debug(
+                "[cwm] 终止：持久化订阅数据。file=%s", self.subscribe_data_file
+            )
+            await self._save_subscribe_data()
+        else:
+            self.subscribe_debug and logger.debug(
+                "[cwm] 终止：订阅数据无待保存变更，跳过落盘"
+            )
 
     # 保存订阅数据
     async def _save_subscribe_data(self):
         """保存订阅数据"""
         async with self._subscribe_lock:
+            self._subscribe_data_dirty = True
             subscriptions = {str(k): list(v) for k, v in self.b2u.items() if v}
             book_meta = {str(k): dict(v) for k, v in self.bmeta.items() if v}
             books_count = len(subscriptions)
             sessions_count = len(self.u2b)
             links_count = sum(len(v) for v in subscriptions.values())
             meta_count = len(book_meta)
-        payload = json.dumps(
-            {"subscriptions": subscriptions, "book_meta": book_meta},
-            indent=4,
-            ensure_ascii=False,
-        )
-        self.subscribe_debug and logger.debug(
-            "[cwm] 保存订阅数据：file=%s books=%s sessions=%s links=%s meta=%s payload_chars=%s",
-            self.subscribe_data_file,
-            books_count,
-            sessions_count,
-            links_count,
-            meta_count,
-            len(payload),
-        )
+            payload = json.dumps(
+                {"subscriptions": subscriptions, "book_meta": book_meta},
+                indent=4,
+                ensure_ascii=False,
+            )
+            self.subscribe_debug and logger.debug(
+                "[cwm] 保存订阅数据：file=%s books=%s sessions=%s links=%s meta=%s payload_chars=%s",
+                self.subscribe_data_file,
+                books_count,
+                sessions_count,
+                links_count,
+                meta_count,
+                len(payload),
+            )
+            try:
+                await asyncio.to_thread(
+                    self._write_text_atomic, self.subscribe_data_file, payload
+                )
+                self._subscribe_data_dirty = False
+                self.subscribe_debug and logger.debug(
+                    "[cwm] 保存订阅数据成功：file=%s", self.subscribe_data_file
+                )
+            except OSError as e:
+                logger.error(f"保存订阅数据失败: {e}")
+                self.subscribe_debug and logger.debug(
+                    "[cwm] 保存订阅数据失败：file=%s err=%s",
+                    self.subscribe_data_file,
+                    e,
+                )
+
+    @staticmethod
+    def _write_text_atomic(path: Path, content: str) -> None:
+        """Write content without exposing a truncated target file on crashes."""
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp_name = None
         try:
-            self.subscribe_data_file.parent.mkdir(parents=True, exist_ok=True)
-            async with aiofiles.open(
-                self.subscribe_data_file, "w", encoding="utf-8"
-            ) as f:
-                await f.write(payload)
-            self.subscribe_debug and logger.debug(
-                "[cwm] 保存订阅数据成功：file=%s", self.subscribe_data_file
-            )
-        except OSError as e:
-            logger.error(f"保存订阅数据失败: {e}")
-            self.subscribe_debug and logger.debug(
-                "[cwm] 保存订阅数据失败：file=%s err=%s", self.subscribe_data_file, e
-            )
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_name = temp_file.name
+                temp_file.write(content)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            os.replace(temp_name, target)
+            temp_name = None
+
+            if os.name == "posix":
+                dir_fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        finally:
+            if temp_name:
+                try:
+                    Path(temp_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     # 异步加载订阅数据
     async def _load_subscribe_data(self):
