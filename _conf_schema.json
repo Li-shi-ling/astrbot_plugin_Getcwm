@@ -4,5 +4,11 @@
     "type": "int",
     "default": 20,
     "hint": "例如：60"
+  },
+  "CWM_SUBSCRIBE_DEBUG": {
+    "description": "是否开启订阅流程调试日志",
+    "type": "bool",
+    "default": false,
+    "hint": "设置为 true 时输出订阅相关调试日志"
   }
 }
