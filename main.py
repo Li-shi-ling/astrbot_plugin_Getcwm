@@ -1,21 +1,17 @@
 import asyncio
 import functools
 import json
-import os
 import re
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
-import aiofiles
-
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, ToolSet, logger
-from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 from .src.cards import (
     render_book_details_card,
@@ -28,6 +24,7 @@ from .src.core import (
     parse_book_details_html_content,
     parse_search_html_content,
 )
+from .src.db import DBManager, SubscribeRepo
 
 
 @register("Getcwm", "lishining", "刺猬猫小说数据获取与画图插件", "3.0.0")
@@ -41,6 +38,9 @@ class GetcwmPlugin(Star):
         self.interval_time = config.get("interval_time", 20)
         self.subscribe_debug = bool(config.get("CWM_SUBSCRIBE_DEBUG", False))
         self.subscribe_data_file = self._data_dir / "subscribe.json"
+        self.subscribe_db_file = self._data_dir / "subscribe.db"
+        self.subscribe_db = DBManager(self.subscribe_db_file)
+        self.subscribe_repo = SubscribeRepo(self.subscribe_db)
         self.b2u: dict[int, list[str]] = {}
         self.u2b: dict[str, list[int]] = {}
         self.bmeta: dict[int, dict] = {}
@@ -1006,15 +1006,18 @@ class GetcwmPlugin(Star):
     # 异步初始化函数
     async def initialize(self):
         self.subscribe_debug and logger.debug(
-            "[cwm] 初始化：加载订阅数据。file=%s", self.subscribe_data_file
+            "[cwm] 初始化订阅数据：db=%s legacy_file=%s",
+            self.subscribe_db_file,
+            self.subscribe_data_file,
         )
+        await self.subscribe_db.init_db()
         subscribe_data = await self._load_subscribe_data()
         self.b2u = subscribe_data.get("b2u", {}) or {}
         self.u2b = subscribe_data.get("u2b", {}) or {}
         self.bmeta = subscribe_data.get("bmeta", {}) or {}
         total_links = sum(len(v) for v in (self.b2u or {}).values())
         self.subscribe_debug and logger.debug(
-            "[cwm] 初始化：订阅数据加载完成。books=%s sessions=%s links=%s meta=%s",
+            "[cwm] 初始化订阅数据完成：books=%s sessions=%s links=%s meta=%s",
             len(self.b2u or {}),
             len(self.u2b or {}),
             total_links,
@@ -1022,7 +1025,6 @@ class GetcwmPlugin(Star):
         )
         await self.start_subscribe_task()
 
-    # 异步卸载函数
     async def terminate(self):
         self.subscribe_debug and logger.debug(
             "[cwm] 终止：停止订阅任务。running=%s task=%s",
@@ -1060,119 +1062,82 @@ class GetcwmPlugin(Star):
         """保存订阅数据"""
         async with self._subscribe_lock:
             self._subscribe_data_dirty = True
-            subscriptions = {str(k): list(v) for k, v in self.b2u.items() if v}
-            book_meta = {str(k): dict(v) for k, v in self.bmeta.items() if v}
+            subscriptions = {int(k): list(v) for k, v in self.b2u.items() if v}
+            book_meta = {int(k): dict(v) for k, v in self.bmeta.items() if v}
             books_count = len(subscriptions)
             sessions_count = len(self.u2b)
             links_count = sum(len(v) for v in subscriptions.values())
             meta_count = len(book_meta)
-            payload = json.dumps(
-                {"subscriptions": subscriptions, "book_meta": book_meta},
-                indent=4,
-                ensure_ascii=False,
-            )
             self.subscribe_debug and logger.debug(
-                "[cwm] 保存订阅数据：file=%s books=%s sessions=%s links=%s meta=%s payload_chars=%s",
-                self.subscribe_data_file,
+                "[cwm] 保存订阅数据：db=%s books=%s sessions=%s links=%s meta=%s",
+                self.subscribe_db_file,
                 books_count,
                 sessions_count,
                 links_count,
                 meta_count,
-                len(payload),
             )
             try:
-                await asyncio.to_thread(
-                    self._write_text_atomic, self.subscribe_data_file, payload
-                )
+                await self.subscribe_repo.replace_state(subscriptions, book_meta)
                 self._subscribe_data_dirty = False
                 self.subscribe_debug and logger.debug(
-                    "[cwm] 保存订阅数据成功：file=%s", self.subscribe_data_file
+                    "[cwm] 保存订阅数据成功：db=%s", self.subscribe_db_file
                 )
             except OSError as e:
                 logger.error(f"保存订阅数据失败: {e}")
                 self.subscribe_debug and logger.debug(
-                    "[cwm] 保存订阅数据失败：file=%s err=%s",
-                    self.subscribe_data_file,
+                    "[cwm] 保存订阅数据失败：db=%s err=%s",
+                    self.subscribe_db_file,
                     e,
                 )
 
-    @staticmethod
-    def _write_text_atomic(path: Path, content: str) -> None:
-        """Write content without exposing a truncated target file on crashes."""
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp_name = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=target.parent,
-                prefix=f".{target.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temp_file:
-                temp_name = temp_file.name
-                temp_file.write(content)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-
-            os.replace(temp_name, target)
-            temp_name = None
-
-            if os.name == "posix":
-                dir_fd = os.open(target.parent, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-        finally:
-            if temp_name:
-                try:
-                    Path(temp_name).unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    # 异步加载订阅数据
     async def _load_subscribe_data(self):
         """异步加载订阅数据"""
         out = {"b2u": {}, "u2b": {}, "bmeta": {}}
         try:
             self.subscribe_debug and logger.debug(
-                "[cwm] 加载订阅数据：file=%s", self.subscribe_data_file
+                "[cwm] 加载订阅数据: db=%s legacy_file=%s",
+                self.subscribe_db_file,
+                self.subscribe_data_file,
             )
+            repo_state = await self.subscribe_repo.load_state()
+            out = repo_state
             if self.subscribe_data_file.exists():
-                async with aiofiles.open(
-                    self.subscribe_data_file, encoding="utf-8"
-                ) as f:
-                    content = await f.read()
-                    self.subscribe_debug and logger.debug(
-                        "[cwm] 加载订阅数据：读取成功。chars=%s", len(content)
-                    )
-                    if not content.strip():
-                        self.subscribe_debug and logger.debug(
-                            "[cwm] 加载订阅数据：文件为空，使用默认值"
-                        )
-                        return out
+                content = self.subscribe_data_file.read_text(encoding="utf-8")
+                self.subscribe_debug and logger.debug(
+                    "[cwm] l加载订阅数据：读取成功: chars=%s", len(content)
+                )
+                if content.strip():
                     raw = json.loads(content) or {}
-
-                    b2u = self._normalize_book_subscribers(
+                    legacy_b2u = self._normalize_book_subscribers(
                         raw.get("subscriptions", raw.get("b2u", {}))
                     )
-                    bmeta = self._normalize_book_meta_map(
+                    legacy_bmeta = self._normalize_book_meta_map(
                         raw.get("book_meta", raw.get("bmeta", {}))
                     )
-
-                    out["b2u"] = b2u
-                    out["u2b"] = self._rebuild_session_books(b2u)
-                    out["bmeta"] = bmeta
-            else:
+                    merged_b2u = dict(out["b2u"])
+                    for book_id, sessions in legacy_b2u.items():
+                        merged_b2u[book_id] = self._dedupe_str_list(
+                            list(merged_b2u.get(book_id, [])) + list(sessions)
+                        )
+                    merged_bmeta = dict(out["bmeta"])
+                    merged_bmeta.update(legacy_bmeta)
+                    out["b2u"] = merged_b2u
+                    out["u2b"] = self._rebuild_session_books(merged_b2u)
+                    out["bmeta"] = merged_bmeta
+                    await self.subscribe_repo.replace_state(merged_b2u, merged_bmeta)
+                    self.subscribe_debug and logger.debug(
+                        "[cwm] 已将旧订阅 JSON 迁移到数据库：file=%s db=%s",
+                        self.subscribe_data_file,
+                        self.subscribe_db_file,
+                    )
+                self.subscribe_data_file.unlink(missing_ok=True)
                 self.subscribe_debug and logger.debug(
-                    "[cwm] 加载订阅数据：文件不存在，使用默认值"
+                    "[cwm] 迁移后已删除旧订阅 JSON：file=%s",
+                    self.subscribe_data_file,
                 )
-
             links_count = sum(len(v) for v in (out.get("b2u", {}) or {}).values())
             self.subscribe_debug and logger.debug(
-                "[cwm] 加载订阅数据成功：books=%s sessions=%s links=%s meta=%s",
+                "[cwm] 加载订阅数据完成：books=%s sessions=%s links=%s meta=%s",
                 len(out.get("b2u", {}) or {}),
                 len(out.get("u2b", {}) or {}),
                 links_count,
@@ -1182,19 +1147,22 @@ class GetcwmPlugin(Star):
         except (json.JSONDecodeError, OSError) as e:
             logger.error(f"加载订阅数据失败: {e}")
             self.subscribe_debug and logger.debug(
-                "[cwm] 加载订阅数据失败：file=%s err=%s", self.subscribe_data_file, e
+                "[cwm] 加载订阅数据失败：db=%s legacy_file=%s err=%s",
+                self.subscribe_db_file,
+                self.subscribe_data_file,
+                e,
             )
             return out
         except Exception as e:
             logger.error(f"加载订阅数据失败: {e}")
             self.subscribe_debug and logger.debug(
-                "[cwm] 加载订阅数据意外错误：file=%s err=%s",
+                "[cwm] 加载订阅数据出现意外错误：db=%s legacy_file=%s err=%s",
+                self.subscribe_db_file,
                 self.subscribe_data_file,
                 e,
             )
             return out
 
-    # 开启定时订阅任务
     async def start_subscribe_task(self):
         """启动定时订阅任务"""
         if self.subscribe_task:
