@@ -6,10 +6,9 @@ from datetime import datetime
 from pathlib import Path
 
 import astrbot.api.message_components as Comp
-from astrbot.api import AstrBotConfig, ToolSet, logger
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType
-from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
@@ -50,36 +49,6 @@ class GetcwmPlugin(Star):
         # 订阅任务相关
         self.subscribe_task: asyncio.Task | None = None
         self.subscribe_running = True
-
-    def _prepare_fc_request(
-        self, event: AstrMessageEvent, *, original_message: str, query: str
-    ) -> None:
-        normalized_query = query.strip()
-        event.set_extra("getcwm_fc_routed", True)
-        event.set_extra("getcwm_fc_original_message", original_message)
-        event.set_extra("getcwm_fc_query", normalized_query)
-
-    @filter.on_llm_request(priority=-100)
-    async def inject_fc_search_tool(
-        self, event: AstrMessageEvent, req: ProviderRequest
-    ) -> None:
-        if not bool(event.get_extra("getcwm_fc_routed", False)):
-            if req.func_tool is not None:
-                req.func_tool.remove_tool("cwm_search_books")
-            return
-        query = str(event.get_extra("getcwm_fc_query", "") or "").strip()
-        injection_prompt = (
-            f"用户想进行小说搜索`{query}`请使用cwm_search_books进行搜索"
-            if query
-            else "用户想进行小说搜索`{}`请使用cwm_search_books进行搜索"
-        )
-        existing_system_prompt = str(getattr(req, "system_prompt", "") or "").strip()
-        req.system_prompt = (
-            f"{existing_system_prompt}\n\n{injection_prompt}".strip()
-            if existing_system_prompt
-            else injection_prompt
-        )
-        self._add_fc_search_tool(req)
 
     @filter.llm_tool(name="cwm_search_books")
     async def cwm_search_books(
@@ -132,17 +101,6 @@ class GetcwmPlugin(Star):
             },
             ensure_ascii=False,
         )
-
-    def _add_fc_search_tool(self, req: ProviderRequest) -> None:
-        tool_manager = self.context.get_llm_tool_manager()
-        tool_name = "cwm_search_books"
-        tool = tool_manager.get_func(tool_name)
-        if tool is None:
-            logger.warning("Getcwm FC tool not found: %s", tool_name)
-            return
-        if req.func_tool is None:
-            req.func_tool = ToolSet()
-        req.func_tool.add_tool(tool)
 
     @staticmethod
     def _safe_int(value, default: int = -1) -> int:
@@ -273,16 +231,6 @@ class GetcwmPlugin(Star):
             "/cwm 测试推送                      强制向当前会话推送订阅更新(管理员,用于测试)",
         ]
         yield event.plain_result("\n".join(help_text))
-
-    @cwm.command("fc")
-    async def fc(self, event: AstrMessageEvent, query: str = ""):
-        """Route the current request to LLM and inject the Ciweimao search tool."""
-        original_message = str(getattr(event, "message_str", "") or "").strip()
-        self._prepare_fc_request(
-            event,
-            original_message=original_message,
-            query=str(query or "").strip(),
-        )
 
     @cwm.command("搜索")
     async def search(self, event: AstrMessageEvent, book_name: str, page: int = 1):
