@@ -2,6 +2,7 @@ import asyncio
 import functools
 import json
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -150,6 +151,7 @@ class GetcwmPlugin(Star):
             if current_meta == normalized_meta:
                 return False
             self.bmeta[int(book_id)] = normalized_meta
+            self._subscribe_data_dirty = True
             return True
 
     @staticmethod
@@ -997,7 +999,7 @@ class GetcwmPlugin(Star):
                 pass
         if self._subscribe_data_dirty:
             self.subscribe_debug and logger.debug(
-                "[cwm] 终止：持久化订阅数据。file=%s", self.subscribe_data_file
+                "[cwm] 终止：持久化订阅数据。db=%s", self.subscribe_db_file
             )
             await self._save_subscribe_data()
         else:
@@ -1030,7 +1032,7 @@ class GetcwmPlugin(Star):
                 self.subscribe_debug and logger.debug(
                     "[cwm] 保存订阅数据成功：db=%s", self.subscribe_db_file
                 )
-            except OSError as e:
+            except (OSError, sqlite3.Error) as e:
                 logger.error(f"保存订阅数据失败: {e}")
                 self.subscribe_debug and logger.debug(
                     "[cwm] 保存订阅数据失败：db=%s err=%s",
@@ -1050,9 +1052,11 @@ class GetcwmPlugin(Star):
             repo_state = await self.subscribe_repo.load_state()
             out = repo_state
             if self.subscribe_data_file.exists():
-                content = self.subscribe_data_file.read_text(encoding="utf-8")
+                content = await asyncio.to_thread(
+                    self.subscribe_data_file.read_text, encoding="utf-8"
+                )
                 self.subscribe_debug and logger.debug(
-                    "[cwm] l加载订阅数据：读取成功: chars=%s", len(content)
+                    "[cwm] 加载订阅数据：读取旧 JSON 成功 chars=%s", len(content)
                 )
                 if content.strip():
                     raw = json.loads(content) or {}
@@ -1078,7 +1082,9 @@ class GetcwmPlugin(Star):
                         self.subscribe_data_file,
                         self.subscribe_db_file,
                     )
-                self.subscribe_data_file.unlink(missing_ok=True)
+                await asyncio.to_thread(
+                    self.subscribe_data_file.unlink, missing_ok=True
+                )
                 self.subscribe_debug and logger.debug(
                     "[cwm] 迁移后已删除旧订阅 JSON：file=%s",
                     self.subscribe_data_file,
