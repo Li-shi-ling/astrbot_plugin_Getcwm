@@ -212,3 +212,4 @@ AGENTS.md
 tests/
 .pipeline-workspace/
 .omx/
+scripts/
