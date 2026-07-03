@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.ciweimao.com"
+FANQIE_BASE_URL = "https://fanqienovel.com"
 DEFAULT_TIMEOUT_S = 10
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -117,6 +119,14 @@ def abspath_url(url: str) -> str:
     if not url:
         return ""
     return url if url.startswith("http") else urljoin(BASE_URL, url)
+
+
+def fanqie_abspath_url(url: str) -> str:
+    if not url:
+        return ""
+    if url.startswith("//"):
+        return "https:" + url
+    return url if url.startswith("http") else urljoin(FANQIE_BASE_URL, url)
 
 
 def fetch_image_data_uri(
@@ -337,6 +347,7 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
     )
 
     return {
+        "Source": "cwm",
         "Works_Name": works_name,
         "Author_Name": author_name,
         "Tag_List": tag_list,
@@ -347,6 +358,269 @@ def parse_book_details_html_content(html_content: str) -> dict[str, Any] | None:
         "data": data,
         "data2": data2,
     }
+
+
+def _extract_window_initial_state(html_content: str) -> dict[str, Any]:
+    marker = "window.__INITIAL_STATE__="
+    start = (html_content or "").find(marker)
+    if start < 0:
+        return {}
+
+    pos = start + len(marker)
+    while pos < len(html_content) and html_content[pos].isspace():
+        pos += 1
+    if pos >= len(html_content) or html_content[pos] != "{":
+        return {}
+
+    depth = 0
+    in_string = False
+    escape = False
+    quote_char = ""
+    for idx in range(pos, len(html_content)):
+        ch = html_content[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote_char:
+                in_string = False
+            continue
+        if ch in ("\"", "'"):
+            in_string = True
+            quote_char = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                raw = html_content[pos : idx + 1]
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    logger.debug("Failed to parse Fanqie initial state JSON")
+                    return {}
+    return {}
+
+
+def _fanqie_ts(value: Any) -> int:
+    try:
+        ts = int(str(value or "").strip())
+    except Exception:
+        return -1
+    if ts > 10_000_000_000:
+        ts //= 1000
+    return ts if ts > 0 else -1
+
+
+def _fanqie_status_text(value: Any) -> str:
+    try:
+        status = int(value)
+    except Exception:
+        return "未知"
+    return {0: "未知", 1: "连载中", 2: "已完结"}.get(status, "未知")
+
+
+def _fanqie_category_names(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        data = raw
+    else:
+        try:
+            data = json.loads(str(raw or "[]"))
+        except Exception:
+            data = []
+    names: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("Name") or item.get("name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _fanqie_word_text(value: Any) -> str:
+    try:
+        count = int(value or 0)
+    except Exception:
+        return str(value or "")
+    if count >= 10_000:
+        return f"{count / 10_000:.1f}万"
+    return str(count)
+
+
+def parse_fanqie_book_details_html_content(html_content: str) -> dict[str, Any] | None:
+    state = _extract_window_initial_state(html_content)
+    page = state.get("page") if isinstance(state, dict) else {}
+    page = page if isinstance(page, dict) else {}
+    soup = BeautifulSoup(html_content or "", "html.parser")
+
+    works_name = str(page.get("bookName") or "").strip()
+    if not works_name:
+        works_name = safe_text(soup.select_one("h1"))
+
+    author_name = str(
+        page.get("authorName") or page.get("author") or ""
+    ).strip()
+    if not author_name:
+        author_name = safe_text(soup.select_one(".author-name-text"))
+
+    tags = [_fanqie_status_text(page.get("creationStatus") or page.get("status"))]
+    tags.extend(_fanqie_category_names(page.get("categoryV2")))
+    if len(tags) <= 1:
+        tags = [
+            safe_text(tag)
+            for tag in soup.select(".info-label span")
+            if safe_text(tag)
+        ]
+    tags = [tag for idx, tag in enumerate(tags) if tag and tag not in tags[:idx]]
+
+    chapter_name = str(page.get("lastChapterTitle") or "").strip()
+    update_time = _fanqie_ts(page.get("lastPublishTime"))
+    if not chapter_name:
+        latest = soup.select_one(".info-last-title")
+        latest_text = safe_text(latest)
+        chapter_name = re.sub(r"^最近更新：", "", latest_text).strip()
+    if update_time <= 0:
+        latest_time = safe_text(soup.select_one(".info-last-time"))
+        try:
+            update_time = int(
+                datetime.strptime(latest_time, "%Y-%m-%d %H:%M")
+                .replace(tzinfo=asia_shanghai_tz())
+                .timestamp()
+            )
+        except Exception:
+            update_time = -1
+
+    intro = str(page.get("abstract") or "").strip()
+    if not intro:
+        intro = safe_text(soup.select_one(".page-abstract-content"))
+
+    cover = str(
+        page.get("thumbUrl") or page.get("thumbUri") or page.get("sourceUri") or ""
+    ).strip()
+    if cover and cover.startswith("novel-pic/"):
+        cover = "https://p9-novel-sign.byteimg.com/" + cover
+    if not cover:
+        img = soup.select_one(".book-cover-img")
+        cover = str(img.get("src") or "") if img else ""
+
+    word_count = page.get("wordNumber") or page.get("word_count") or 0
+    read_count = page.get("readCount") or page.get("read_count") or 0
+    chapter_total = page.get("chapterTotal") or 0
+
+    if not works_name and not author_name and not chapter_name:
+        return None
+
+    return {
+        "Source": "fq",
+        "Works_Name": works_name,
+        "Author_Name": author_name,
+        "Tag_List": tags,
+        "Chapter_Name": chapter_name,
+        "Update_Time": update_time,
+        "Brief_Introduction": intro,
+        "Cover_Image": fanqie_abspath_url(cover),
+        "data": {
+            "来源": "番茄小说",
+            "状态": tags[0] if tags else "未知",
+            "章节数": chapter_total,
+            "书籍ID": page.get("bookId") or "",
+        },
+        "data2": {
+            "总点击": read_count,
+            "总收藏": "未知",
+            "总字数": _fanqie_word_text(word_count),
+        },
+    }
+
+
+def _normalize_fanqie_search_item(item: dict[str, Any]) -> dict[str, str] | None:
+    book_id = str(item.get("book_id") or item.get("bookId") or "").strip()
+    title = str(item.get("book_name") or item.get("bookName") or "").strip()
+    if not book_id and not title:
+        return None
+
+    author = str(item.get("author") or item.get("authorName") or "未知作者").strip()
+    chapter = str(
+        item.get("last_chapter_title") or item.get("lastChapterTitle") or ""
+    ).strip()
+    update_ts = _fanqie_ts(item.get("last_chapter_time") or item.get("lastPublishTime"))
+    update_time = f"最近更新：{chapter}" if chapter else "未知更新"
+    if update_ts > 0:
+        update_time += f" [{format_ts_cn(update_ts)}]"
+
+    return {
+        "title": title or f"番茄书籍 {book_id}",
+        "author": author or "未知作者",
+        "update_time": update_time,
+        "description": str(
+            item.get("book_abstract") or item.get("abstract") or ""
+        ).strip(),
+        "read_url": f"{FANQIE_BASE_URL}/page/{book_id}" if book_id else "",
+    }
+
+
+def parse_fanqie_search_html_content(html_content: str) -> list[dict[str, str]]:
+    raw = html_content or ""
+    payload: dict[str, Any] = {}
+    try:
+        payload = json.loads(raw) if raw.strip().startswith("{") else {}
+    except Exception:
+        payload = {}
+
+    if payload:
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        data = data if isinstance(data, dict) else {}
+        rows = data.get("search_book_data_list") or data.get("searchBookList") or []
+        if isinstance(rows, list):
+            return [
+                normalized
+                for item in rows
+                if isinstance(item, dict)
+                for normalized in [_normalize_fanqie_search_item(item)]
+                if normalized
+            ]
+
+    state = _extract_window_initial_state(raw)
+    search = state.get("search") if isinstance(state, dict) else {}
+    search = search if isinstance(search, dict) else {}
+    rows = search.get("searchBookList") or []
+    if isinstance(rows, list):
+        return [
+            normalized
+            for item in rows
+            if isinstance(item, dict)
+            for normalized in [_normalize_fanqie_search_item(item)]
+            if normalized
+        ]
+
+    soup = BeautifulSoup(raw, "html.parser")
+    results: list[dict[str, str]] = []
+    for item in soup.select(".search-book-item"):
+        link_id = ""
+        title = safe_text(item.select_one(".title"))
+        href = ""
+        for link in item.select("a[href]"):
+            candidate = str(link.get("href") or "")
+            if "/page/" in candidate:
+                href = candidate
+                m = re.search(r"/page/(\d+)", candidate)
+                link_id = m.group(1) if m else ""
+                break
+        if not title and not href:
+            continue
+        results.append(
+            {
+                "title": title or f"番茄书籍 {link_id}",
+                "author": safe_text(item.select_one(".desc span")) or "未知作者",
+                "update_time": safe_text(item.select_one(".footer")) or "未知更新",
+                "description": safe_text(item.select_one(".abstract")),
+                "read_url": fanqie_abspath_url(href),
+            }
+        )
+    return results
 
 
 class CiweimaoClient:
@@ -473,3 +747,55 @@ class CiweimaoClient:
         )
         resp.raise_for_status()
         return html_text
+
+
+class FanqieNovelClient:
+    def __init__(
+        self,
+        *,
+        session: requests.Session | None = None,
+        timeout_s: int = DEFAULT_TIMEOUT_S,
+    ):
+        self.session = session or requests.Session()
+        self.timeout_s = int(timeout_s)
+        self.session.headers.update(DEFAULT_HEADERS)
+
+    def search_name(self, name: str, page: int = 1) -> str:
+        query = str(name or "").strip()
+        page_index = max(0, int(page) - 1)
+        search_url = f"{FANQIE_BASE_URL}/search/{quote(query)}"
+        try:
+            self.session.get(search_url, timeout=self.timeout_s)
+        except Exception:
+            logger.debug("Fanqie search page warm-up failed", exc_info=True)
+
+        url = f"{FANQIE_BASE_URL}/api/author/search/search_book/v1"
+        resp = self.session.get(
+            url,
+            params={
+                "filter": "127,127,127,127",
+                "page_count": 10,
+                "page_index": page_index,
+                "query_type": 0,
+                "query_word": query,
+            },
+            headers={
+                **DEFAULT_HEADERS,
+                "Accept": "application/json, text/plain, */*",
+                "Referer": search_url,
+            },
+            timeout=self.timeout_s,
+        )
+        resp.raise_for_status()
+        if resp.text:
+            return resp.text
+
+        fallback = self.session.get(search_url, timeout=self.timeout_s)
+        fallback.raise_for_status()
+        return fallback.text
+
+    def get_book_details(self, book_id: int) -> str:
+        url = f"{FANQIE_BASE_URL}/page/{int(book_id)}"
+        resp = self.session.get(url, timeout=self.timeout_s)
+        resp.raise_for_status()
+        return resp.text

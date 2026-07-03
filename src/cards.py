@@ -574,7 +574,12 @@ def render_subscribe_update_card(
     update_ts = int(details.get("Update_Time", -1) or -1)
     cover_url = details.get("Cover_Image", "") or ""
 
-    book_url = f"https://www.ciweimao.com/book/{int(book_id)}"
+    source = str(details.get("Source") or details.get("source") or "").strip()
+    book_url = (
+        f"https://fanqienovel.com/page/{int(book_id)}"
+        if source == "fq"
+        else f"https://www.ciweimao.com/book/{int(book_id)}"
+    )
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     cover_data_uri = fetch_image_data_uri(str(cover_url), session=session)

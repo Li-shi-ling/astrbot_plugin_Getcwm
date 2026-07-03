@@ -20,7 +20,10 @@ from .src.cards import (
 )
 from .src.core import (
     CiweimaoClient,
+    FanqieNovelClient,
     format_ts_cn,
+    parse_fanqie_book_details_html_content,
+    parse_fanqie_search_html_content,
     parse_book_details_html_content,
     parse_search_html_content,
 )
@@ -32,6 +35,7 @@ class GetcwmPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self._cwm_client = CiweimaoClient()
+        self._fq_client = FanqieNovelClient()
         self._data_dir = Path(StarTools.get_data_dir())
         self._render_dir = Path(get_astrbot_temp_path()) / "Getcwm"
         self._max_search_items = 8
@@ -103,6 +107,58 @@ class GetcwmPlugin(Star):
             ensure_ascii=False,
         )
 
+    @filter.llm_tool(name="fq_search_books")
+    async def fq_search_books(
+        self, event: AstrMessageEvent, keyword: str, page: int = 1, max_items: int = 5
+    ) -> str:
+        """Search Fanqie Novel books and return AI-usable JSON results.
+        Args:
+            keyword(string): Search keyword for Fanqie Novel books.
+            page(int, optional): Optional search result page number. Defaults to 1.
+            max_items(int, optional): Optional maximum result items to return. Defaults to 5.
+        """
+        query = str(keyword or "").strip()
+        if not query:
+            return json.dumps(
+                {
+                    "query": "",
+                    "page": 1,
+                    "results": [],
+                    "error": "keyword is required",
+                },
+                ensure_ascii=False,
+            )
+
+        safe_page = max(1, self._safe_int(page, 1))
+        safe_limit = max(1, min(10, self._safe_int(max_items, 5)))
+        html = await self._run_sync(self._fq_client.search_name, query, safe_page)
+        items = parse_fanqie_search_html_content(html)
+
+        results: list[dict[str, object]] = []
+        for item in items[:safe_limit]:
+            read_url = str(item.get("read_url", "") or "")
+            results.append(
+                {
+                    "title": str(item.get("title", "") or ""),
+                    "author": str(item.get("author", "") or ""),
+                    "update_time": str(item.get("update_time", "") or ""),
+                    "description": str(item.get("description", "") or ""),
+                    "read_url": read_url,
+                    "book_id": self._extract_book_id(read_url),
+                }
+            )
+
+        return json.dumps(
+            {
+                "query": query,
+                "page": safe_page,
+                "total_results": len(items),
+                "returned_results": len(results),
+                "results": results,
+            },
+            ensure_ascii=False,
+        )
+
     @staticmethod
     def _safe_int(value, default: int = -1) -> int:
         try:
@@ -111,11 +167,17 @@ class GetcwmPlugin(Star):
             return default
 
     def _build_book_meta(
-        self, book_id: int, details: dict | None, fallback_meta: dict | None = None
+        self,
+        book_id: int,
+        details: dict | None,
+        fallback_meta: dict | None = None,
+        *,
+        source: str | None = None,
     ) -> dict:
         data = details if isinstance(details, dict) else {}
         base_meta = fallback_meta if isinstance(fallback_meta, dict) else {}
         return {
+            "source": str(source or data.get("Source") or base_meta.get("source") or "cwm"),
             "title_text": str(
                 data.get("Works_Name")
                 or base_meta.get("title_text")
@@ -129,6 +191,7 @@ class GetcwmPlugin(Star):
 
     def _apply_meta_to_details(self, details: dict | None, meta: dict) -> dict:
         merged = dict(details) if isinstance(details, dict) else {}
+        merged.setdefault("Source", meta.get("source", "cwm"))
         merged.setdefault("Works_Name", meta["title_text"])
         if meta["chapter"] and not merged.get("Chapter_Name"):
             merged["Chapter_Name"] = meta["chapter"]
@@ -142,6 +205,7 @@ class GetcwmPlugin(Star):
             return False
         normalized_meta = dict(meta)
         normalized_meta["timestamp"] = meta_ts
+        normalized_meta["source"] = str(normalized_meta.get("source") or "cwm")
 
         async with self._subscribe_lock:
             current_meta = dict(self.bmeta.get(int(book_id), {}) or {})
@@ -200,6 +264,7 @@ class GetcwmPlugin(Star):
                     "Chapter_Name": meta.get("chapter", ""),
                     "Update_Time": meta.get("timestamp", -1),
                 },
+                source=str(meta.get("source") or "cwm"),
             )
         return normalized
 
@@ -349,6 +414,144 @@ class GetcwmPlugin(Star):
         msg = await self._force_push_subscribed_books_to_current_session(event)
         yield event.plain_result(msg)
 
+    # fq 指令
+    @filter.command_group("fq")
+    def fq(self):
+        pass
+
+    @fq.command("help")
+    async def fq_help(self, event: AstrMessageEvent):
+        """获取番茄小说指令帮助"""
+        help_text = [
+            "番茄小说插件",
+            "/fq 搜索 [书名] [页码=1]           搜索书籍名片",
+            "/fq 名片 [书籍id]                  获取小说名片",
+            "/fq 详情 [书籍id]                  获取小说名片",
+            "/fq 订阅 [书籍id]                  在当前会话订阅更新推送",
+            "/fq 订阅列表 [会话umo=当前会话]     查看会话的全部订阅（指定其他会话需管理员）",
+            "/fq 取消订阅 [书籍id] [会话umo=当前会话]   取消会话对该书的订阅（指定其他会话需管理员）",
+            "/fq 全部订阅                       展示所有订阅(管理员)",
+            "/fq 测试推送                       强制向当前会话推送订阅更新(管理员,用于测试)",
+        ]
+        yield event.plain_result("\n".join(help_text))
+
+    @fq.command("搜索")
+    async def fq_search(self, event: AstrMessageEvent, book_name: str, page: int = 1):
+        """/fq 搜索 [书名] [页码=1]，搜索番茄小说并返回名片"""
+        try:
+            query = (book_name or "").strip()
+            if not query:
+                yield event.plain_result("请输入书名，例如：/fq 搜索 书名 1")
+                return
+
+            page = max(1, int(page))
+            html = await self._run_sync(self._fq_client.search_name, query, page)
+            items = parse_fanqie_search_html_content(html)
+
+            if not items:
+                yield event.plain_result("未找到相关书籍")
+                return
+
+            async def gen_img():
+                return await self._run_sync(
+                    render_search_card,
+                    items,
+                    query=query,
+                    max_items=self._max_search_items,
+                    output_dir=self._render_dir,
+                )
+
+            def gen_text():
+                return self._format_search_text(
+                    items,
+                    query=query,
+                    max_items=self._max_search_items,
+                    source="fq",
+                )
+
+            async for result in self._generate_image_or_fallback(
+                event, gen_img, gen_text
+            ):
+                yield result
+
+        except Exception as e:
+            logger.exception("fq 搜索失败: %s", e)
+            yield event.plain_result(f"搜索失败: {str(e)}")
+
+    @fq.command("名片")
+    async def fq_novel_card(self, event: AstrMessageEvent, book_id: int):
+        """/fq 名片 [书籍id]，获取番茄小说名片"""
+        try:
+            bid = int(book_id)
+            html = await self._run_sync(self._fq_client.get_book_details, bid)
+            data = parse_fanqie_book_details_html_content(html) or {}
+
+            if not data:
+                yield event.plain_result("未能获取到书籍信息")
+                return
+
+            async def gen_img():
+                return await self._run_sync(
+                    render_book_details_card,
+                    data,
+                    output_dir=self._render_dir,
+                    session=self._fq_client.session,
+                )
+
+            def gen_text():
+                return self._format_book_details_text(data, book_id=bid)
+
+            async for result in self._generate_image_or_fallback(
+                event, gen_img, gen_text
+            ):
+                yield result
+
+        except Exception as e:
+            logger.exception("fq 名片失败: %s", e)
+            yield event.plain_result(f"获取小说名片失败: {str(e)}")
+
+    @fq.command("详情")
+    async def fq_details(self, event: AstrMessageEvent, book_id: int):
+        """/fq 详情 [书id]，获取番茄小说名片（同 /fq 名片）"""
+        async for result in self.fq_novel_card(event, book_id):
+            yield result
+
+    @fq.command("订阅")
+    async def fq_subscribe(self, event: AstrMessageEvent, book_id: int):
+        """/fq 订阅 [书id],在当前会话订阅id对应的番茄小说"""
+        async for result in self.fq_novel_card(event, book_id):
+            yield result
+        msg = await self._subscribe(event, int(book_id), source="fq")
+        yield event.plain_result(msg)
+
+    @fq.command("订阅列表")
+    async def fq_subscribe_list(self, event: AstrMessageEvent, umo: str | None = None):
+        """/fq 订阅列表 [会话umo=当前会话]，查看会话的全部订阅"""
+        msg = await self._get_subscribe_list_text(event, umo=umo)
+        yield event.plain_result(msg)
+
+    @fq.command("取消订阅")
+    async def fq_unsubscribe(
+        self, event: AstrMessageEvent, book_id: int, umo: str | None = None
+    ):
+        """/fq 取消订阅 [书id] [会话umo=当前会话]，取消会话对该书的订阅"""
+        msg = await self._unsubscribe(event, int(book_id), umo=umo)
+        yield event.plain_result(msg)
+
+    @fq.command("全部订阅")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def fq_subscribe_all(self, event: AstrMessageEvent):
+        """/fq 全部订阅，展示所有订阅（管理员）"""
+        msg = await self._get_all_subscribe_pairs_text()
+        yield event.plain_result(msg)
+
+    @fq.command("测试推送")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def fq_admin_test_push(self, event: AstrMessageEvent):
+        """/fq 测试推送（管理员）：强制向当前会话推送本会话所有订阅更新。"""
+        msg = await self._force_push_subscribed_books_to_current_session(event)
+        yield event.plain_result(msg)
+
     async def _force_push_subscribed_books_to_current_session(
         self, event: AstrMessageEvent
     ) -> str:
@@ -402,8 +605,10 @@ class GetcwmPlugin(Star):
             details: dict = {}
             fetch_ok = False
             try:
-                html = await self._run_sync(self._cwm_client.get_book_details, int(bid))
-                details = parse_book_details_html_content(html) or {}
+                source = self._book_source_from_id(int(bid))
+                client, parser = self._source_client_and_parser(source)
+                html = await self._run_sync(client.get_book_details, int(bid))
+                details = parser(html) or {}
                 fetch_ok = True
             except Exception as e:
                 fetch_failed += 1
@@ -418,7 +623,8 @@ class GetcwmPlugin(Star):
             async with self._subscribe_lock:
                 old_meta = dict(self.bmeta.get(int(bid), {}) or {})
 
-            new_meta = self._build_book_meta(bid, details, old_meta)
+            source = str(old_meta.get("source") or self._book_source_from_id(int(bid)))
+            new_meta = self._build_book_meta(bid, details, old_meta, source=source)
             details = self._apply_meta_to_details(details, new_meta)
 
             # update baseline meta without regression
@@ -487,7 +693,9 @@ class GetcwmPlugin(Star):
             f"发送失败 {total_failed}，爬取失败 {fetch_failed}。run_id={run_id}"
         )
 
-    async def _subscribe(self, event: AstrMessageEvent, book_id: int) -> str:
+    async def _subscribe(
+        self, event: AstrMessageEvent, book_id: int, *, source: str = "cwm"
+    ) -> str:
         support_proactive = False
         try:
             support_proactive = bool(event.platform_meta.support_proactive_message)
@@ -508,7 +716,7 @@ class GetcwmPlugin(Star):
             "[cwm] 订阅请求：book_id=%s umo=%s", bid, umo
         )
 
-        latest_meta = await self._fetch_latest_meta(bid)
+        latest_meta = await self._fetch_latest_meta(bid, source=source)
         self.subscribe_debug and logger.debug(
             "[cwm] 订阅基线获取完成：book_id=%s meta=%s", bid, latest_meta
         )
@@ -538,6 +746,8 @@ class GetcwmPlugin(Star):
             if latest_meta and (
                 bid not in self.bmeta
                 or int(self.bmeta.get(bid, {}).get("timestamp", -1) or -1) <= 0
+                or str(self.bmeta.get(bid, {}).get("source") or "cwm")
+                != str(latest_meta.get("source") or "cwm")
             ):
                 self.bmeta[bid] = latest_meta
                 meta_updated = True
@@ -652,7 +862,7 @@ class GetcwmPlugin(Star):
                 lines.append(f"   最新章节：{chapter}")
             if ts > 0:
                 lines.append(f"   更新时间：{format_ts_cn(ts)}")
-            lines.append(f"   链接：https://www.ciweimao.com/book/{int(bid)}")
+            lines.append(f"   链接：{self._book_url(int(bid))}")
 
         out = "\n".join(lines).strip()
         self.subscribe_debug and logger.debug(
@@ -813,15 +1023,19 @@ class GetcwmPlugin(Star):
         )
         return out
 
-    async def _fetch_latest_meta(self, book_id: int) -> dict | None:
+    async def _fetch_latest_meta(
+        self, book_id: int, *, source: str | None = None
+    ) -> dict | None:
         self.subscribe_debug and logger.debug(
             "[cwm] 获取最新元数据开始：book_id=%s", book_id
         )
         try:
             bid = int(book_id)
-            html = await self._run_sync(self._cwm_client.get_book_details, bid)
-            data = parse_book_details_html_content(html) or {}
-            meta = self._build_book_meta(bid, data)
+            src = source or self._book_source_from_id(bid)
+            client, parser = self._source_client_and_parser(src)
+            html = await self._run_sync(client.get_book_details, bid)
+            data = parser(html) or {}
+            meta = self._build_book_meta(bid, data, source=src)
             self.subscribe_debug and logger.debug(
                 "[cwm] 获取最新元数据成功：book_id=%s ts=%s chapter=%s title=%s",
                 book_id,
@@ -859,15 +1073,43 @@ class GetcwmPlugin(Star):
     def _extract_book_id(self, url: str) -> int | None:
         if not url:
             return None
-        m = re.search(r"/book/(\d+)", url)
+        m = re.search(r"/(?:book|page)/(\d+)", url)
         return int(m.group(1)) if m else None
 
+    def _book_source_from_id(self, book_id: int) -> str:
+        try:
+            meta_source = str(
+                (self.bmeta.get(int(book_id), {}) or {}).get("source", "") or ""
+            ).strip()
+            if meta_source:
+                return meta_source
+            return "fq" if int(book_id) >= 1_000_000_000_000 else "cwm"
+        except Exception:
+            return "cwm"
+
+    def _book_url(self, book_id: int, *, source: str | None = None) -> str:
+        src = source or self._book_source_from_id(book_id)
+        if src == "fq":
+            return f"https://fanqienovel.com/page/{int(book_id)}"
+        return f"https://www.ciweimao.com/book/{int(book_id)}"
+
+    def _source_client_and_parser(self, source: str):
+        if source == "fq":
+            return self._fq_client, parse_fanqie_book_details_html_content
+        return self._cwm_client, parse_book_details_html_content
+
     def _format_search_text(
-        self, items: list[dict[str, str]], *, query: str, max_items: int
+        self,
+        items: list[dict[str, str]],
+        *,
+        query: str,
+        max_items: int,
+        source: str = "cwm",
     ) -> str:
         results = list(items)[: max(1, int(max_items))]
+        source_name = "番茄小说" if source == "fq" else "刺猬猫"
         lines: list[str] = [
-            f"刺猬猫搜索：{query}",
+            f"{source_name}搜索：{query}",
             f"共找到 {len(items)} 条结果，展示前 {len(results)} 条：",
         ]
         for idx, it in enumerate(results, start=1):
@@ -1216,8 +1458,10 @@ class GetcwmPlugin(Star):
                 "[cwm] 更新检测：获取详情。book_id=%s", bid
             )
             try:
-                html = await self._run_sync(self._cwm_client.get_book_details, int(bid))
-                details = parse_book_details_html_content(html) or {}
+                source = self._book_source_from_id(int(bid))
+                client, parser = self._source_client_and_parser(source)
+                html = await self._run_sync(client.get_book_details, int(bid))
+                details = parser(html) or {}
             except Exception as e:
                 logger.error(f"[cwm] 获取订阅详情失败 book_id={bid}: {e}")
                 self.subscribe_debug and logger.debug(
@@ -1234,7 +1478,9 @@ class GetcwmPlugin(Star):
                 )
                 continue
 
-            new_meta = self._build_book_meta(int(bid), details)
+            new_meta = self._build_book_meta(
+                int(bid), details, source=self._book_source_from_id(int(bid))
+            )
             new_chapter = new_meta["chapter"]
 
             async with self._subscribe_lock:
@@ -1313,8 +1559,9 @@ class GetcwmPlugin(Star):
         *,
         old_meta: dict | None = None,
     ) -> dict:
+        source = self._book_source_from_id(int(book_id))
         update_text = self._format_subscribe_update_text(
-            book_id, details, old_meta=old_meta
+            book_id, details, old_meta=old_meta, source=source
         )
         self.subscribe_debug and logger.debug(
             "[cwm] 推送更新：开始。book_id=%s subscribers=%s text_chars=%s has_old_meta=%s",
@@ -1331,7 +1578,7 @@ class GetcwmPlugin(Star):
                 details,
                 book_id=int(book_id),
                 output_dir=self._render_dir,
-                session=self._cwm_client.session,
+                session=self._source_client_and_parser(source)[0].session,
             )
             self.subscribe_debug and logger.debug(
                 "[cwm] 推送更新：卡片渲染完成。book_id=%s image_path=%s",
@@ -1389,12 +1636,17 @@ class GetcwmPlugin(Star):
         }
 
     def _format_subscribe_update_text(
-        self, book_id: int, details: dict, *, old_meta: dict | None = None
+        self,
+        book_id: int,
+        details: dict,
+        *,
+        old_meta: dict | None = None,
+        source: str | None = None,
     ) -> str:
         works_name = details.get("Works_Name") or f"书籍ID：{int(book_id)}"
         chapter_name = details.get("Chapter_Name") or "未知章节"
         update_ts = self._safe_int(details.get("Update_Time"))
-        url = f"https://www.ciweimao.com/book/{int(book_id)}"
+        url = self._book_url(int(book_id), source=source)
 
         lines = [
             f"《{works_name}》更新提醒",

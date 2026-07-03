@@ -21,28 +21,31 @@ class SubscribeRepo:
         with self.db._connect() as conn:
             subscription_rows = conn.execute(
                 """
-                SELECT book_id, session_id
+                SELECT source, book_id, session_id
                 FROM cwm_subscription
-                ORDER BY book_id, session_id
+                ORDER BY source, book_id, session_id
                 """
             ).fetchall()
             for row in subscription_rows:
                 book_id = int(row["book_id"])
+                source = str(row["source"] or "cwm").strip() or "cwm"
                 session_id = str(row["session_id"]).strip()
                 if not session_id:
                     continue
                 b2u.setdefault(book_id, []).append(session_id)
+                bmeta.setdefault(book_id, {})["source"] = source
 
             meta_rows = conn.execute(
                 """
-                SELECT book_id, title_text, timestamp, chapter
+                SELECT source, book_id, title_text, timestamp, chapter
                 FROM cwm_book_meta
-                ORDER BY book_id
+                ORDER BY source, book_id
                 """
             ).fetchall()
             for row in meta_rows:
                 book_id = int(row["book_id"])
                 bmeta[book_id] = {
+                    "source": str(row["source"] or "cwm").strip() or "cwm",
                     "title_text": str(row["title_text"] or ""),
                     "timestamp": int(row["timestamp"] or 0),
                     "chapter": str(row["chapter"] or ""),
@@ -64,17 +67,20 @@ class SubscribeRepo:
     def _replace_state_sync(
         self, b2u: dict[int, list[str]], bmeta: dict[int, dict]
     ) -> None:
-        subscription_rows: list[tuple[int, str]] = []
+        subscription_rows: list[tuple[str, int, str]] = []
         for book_id, sessions in b2u.items():
+            source = str((bmeta.get(int(book_id), {}) or {}).get("source") or "cwm")
             for session_id in sessions:
                 normalized_session = str(session_id).strip()
                 if normalized_session:
-                    subscription_rows.append((int(book_id), normalized_session))
+                    subscription_rows.append((source, int(book_id), normalized_session))
 
-        meta_rows: list[tuple[int, str, int, str]] = []
+        meta_rows: list[tuple[str, int, str, int, str]] = []
         for book_id, meta in bmeta.items():
+            source = str(meta.get("source", "") or "cwm").strip() or "cwm"
             meta_rows.append(
                 (
+                    source,
                     int(book_id),
                     str(meta.get("title_text", "") or ""),
                     int(meta.get("timestamp", 0) or 0),
@@ -90,16 +96,16 @@ class SubscribeRepo:
                 if subscription_rows:
                     conn.executemany(
                         """
-                        INSERT INTO cwm_subscription (book_id, session_id)
-                        VALUES (?, ?)
+                        INSERT INTO cwm_subscription (source, book_id, session_id)
+                        VALUES (?, ?, ?)
                         """,
                         subscription_rows,
                     )
                 if meta_rows:
                     conn.executemany(
                         """
-                        INSERT INTO cwm_book_meta (book_id, title_text, timestamp, chapter)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO cwm_book_meta (source, book_id, title_text, timestamp, chapter)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
                         meta_rows,
                     )

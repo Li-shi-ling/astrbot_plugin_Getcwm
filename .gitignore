@@ -206,10 +206,14 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# my
+# my nb
 cs/
 AGENTS.md
-tests/
+tests/*
+!tests/
+!tests/conftest.py
+!tests/test_fanqie.py
+.playwright-mcp/
 .pipeline-workspace/
 .omx/
 scripts/
