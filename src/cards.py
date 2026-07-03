@@ -49,7 +49,9 @@ def _calc_search_card_height(num_items: int) -> int:
     )
 
 
-def _calc_book_details_card_height(num_tags: int, num_props: int) -> int:
+def _calc_book_details_card_height(
+    num_tags: int, num_props: int, num_chapters: int = 0
+) -> int:
     tags = max(0, int(num_tags))
     props = max(0, int(num_props))
 
@@ -66,13 +68,42 @@ def _calc_book_details_card_height(num_tags: int, num_props: int) -> int:
     chapter_h = 96
     prop_rows = math.ceil(min(props, 8) / 2) if props else 0
     props_h = 12 + (prop_rows * 58) + max(0, prop_rows - 1) * 10
+    chapters_h = 0
+    if num_chapters > 0:
+        chapters_h = 14 + 36 + min(int(num_chapters), 4) * 48
     intro_h = 124
 
-    right_h = title_h + author_h + tags_h + stats_h + chapter_h + props_h + intro_h
+    right_h = (
+        title_h
+        + author_h
+        + tags_h
+        + stats_h
+        + chapter_h
+        + props_h
+        + chapters_h
+        + intro_h
+    )
     cover_h = 312
     main_h = max(cover_h, right_h)
     safety = 100
     return body_pad_y + card_pad_y + top_h + main_mt + main_h + safety
+
+
+def _display_value(value: Any, fallback: str = "未知") -> str:
+    text = str(value if value is not None else "").strip()
+    return text or fallback
+
+
+def _compact_number(value: Any) -> str:
+    try:
+        num = int(value or 0)
+    except Exception:
+        return _display_value(value)
+    if num >= 100_000_000:
+        return f"{num / 100_000_000:.1f}亿"
+    if num >= 10_000:
+        return f"{num / 10_000:.1f}万"
+    return str(num)
 
 
 def _render_html_to_png(
@@ -303,6 +334,8 @@ def render_book_details_card(
     chapter_name = details.get("Chapter_Name", "") or ""
     update_ts = int(details.get("Update_Time", -1) or -1)
     cover_url = details.get("Cover_Image", "") or ""
+    source = str(details.get("Source") or details.get("source") or "").strip()
+    is_fanqie = source == "fq"
 
     stat_map = dict(details.get("data2", {}) or {})
     stat_click = stat_map.get("总点击", "")
@@ -310,7 +343,26 @@ def render_book_details_card(
     stat_words = stat_map.get("总字数", "")
 
     prop_map = dict(details.get("data", {}) or {})
-    prop_items = list(prop_map.items())[:8]
+    fanqie_extra = dict(details.get("fanqie_extra", {}) or {})
+    chapter_preview = list(fanqie_extra.get("chapter_preview", []) or [])
+    if is_fanqie:
+        prop_items = [
+            ("来源", prop_map.get("来源", "番茄小说")),
+            ("状态", prop_map.get("状态", "")),
+            ("书籍ID", fanqie_extra.get("book_id") or prop_map.get("书籍ID", "")),
+            ("媒体ID", fanqie_extra.get("media_id") or prop_map.get("媒体ID", "")),
+            ("作者ID", fanqie_extra.get("author_id") or prop_map.get("作者ID", "")),
+            (
+                "最新章节ID",
+                fanqie_extra.get("last_chapter_item_id")
+                or prop_map.get("最新章节ID", ""),
+            ),
+            ("分卷", "、".join(fanqie_extra.get("volume_names", []) or []) or prop_map.get("分卷", "")),
+            ("原始作者", fanqie_extra.get("original_authors", "")),
+        ]
+        prop_items = [(key, val) for key, val in prop_items if _display_value(val, "")]
+    else:
+        prop_items = list(prop_map.items())[:8]
 
     intro = (details.get("Brief_Introduction", "") or "").strip() or "（无简介）"
 
@@ -328,9 +380,53 @@ def render_book_details_card(
         f"<div class='kv'><div class='k'>{html_escape(key)}</div><div class='v'>{html_escape(val)}</div></div>"
         for key, val in prop_items
     )
+    if is_fanqie:
+        stat_cards = [
+            ("阅读量", _compact_number(fanqie_extra.get("read_count") or stat_map.get("阅读量") or stat_click)),
+            ("章节数", _display_value(fanqie_extra.get("chapter_total") or prop_map.get("章节数"))),
+            ("总字数", _display_value(stat_words)),
+        ]
+        brand_name = "番茄小说 · 书籍详情"
+    else:
+        stat_cards = [
+            ("总点击", _display_value(stat_click)),
+            ("总收藏", _display_value(stat_fav)),
+            ("总字数", _display_value(stat_words)),
+        ]
+        brand_name = "刺猬猫 · 书籍详情"
+
+    stats_html = "".join(
+        f"<div class='stat'><div class='k'>{html_escape(key)}</div><div class='v'>{html_escape(val)}</div></div>"
+        for key, val in stat_cards
+    )
+    chapter_rows_html = ""
+    if is_fanqie and chapter_preview:
+        rows: list[str] = []
+        for chapter in chapter_preview[-4:]:
+            if not isinstance(chapter, Mapping):
+                continue
+            order = _display_value(chapter.get("order"), "")
+            title = _display_value(chapter.get("title"), "未知章节")
+            item_id = _display_value(chapter.get("item_id"), "")
+            volume = _display_value(chapter.get("volume"), "")
+            first_pass_ts = int(chapter.get("first_pass_time") or -1)
+            prefix = f"第{order}章" if order else "章节"
+            meta_parts = [part for part in [volume, item_id, format_ts_cn(first_pass_ts) if first_pass_ts > 0 else ""] if part]
+            rows.append(
+                f"<div class='chapter-row'><div class='chapter-title'>{html_escape(prefix)} · {html_escape(title)}</div><div class='chapter-meta'>{html_escape(' / '.join(meta_parts))}</div></div>"
+            )
+        if rows:
+            chapter_rows_html = f"""
+        <div class="chapter-list">
+          <div class="section-title">最近章节</div>
+          {"".join(rows)}
+        </div>
+            """
 
     width = 1024
-    height = _calc_book_details_card_height(min(len(tag_list), 10), len(prop_items))
+    height = _calc_book_details_card_height(
+        min(len(tag_list), 10), len(prop_items), len(chapter_preview) if is_fanqie else 0
+    )
 
     html_str = f"""<!doctype html>
 <html lang="zh-CN">
@@ -493,6 +589,31 @@ def render_book_details_card(
     }}
     .kv .k {{ font-size: 12px; opacity: 0.78; {line_clamp_css(1)} }}
     .kv .v {{ margin-top: 5px; font-size: 14px; font-weight: 900; {line_clamp_css(1)} }}
+    .chapter-list {{
+      margin-top: 12px;
+      border-radius: 18px;
+      padding: 12px 14px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.14), rgba(255,255,255,0.05));
+      border: 1px solid rgba(255,255,255,0.14);
+    }}
+    .section-title {{ font-size: 12px; opacity: 0.78; margin-bottom: 8px; }}
+    .chapter-row {{
+      padding: 8px 0;
+      border-top: 1px solid rgba(255,255,255,0.10);
+    }}
+    .chapter-row:first-of-type {{ border-top: 0; padding-top: 0; }}
+    .chapter-title {{
+      font-size: 13px;
+      font-weight: 900;
+      line-height: 1.25;
+      {line_clamp_css(1)}
+    }}
+    .chapter-meta {{
+      margin-top: 4px;
+      font-size: 11px;
+      opacity: 0.72;
+      {line_clamp_css(1)}
+    }}
     .intro {{
       margin-top: 12px;
       border-radius: 18px;
@@ -513,7 +634,7 @@ def render_book_details_card(
 <body>
   <div class="card">
     <div class="top">
-      <div class="brand">刺猬猫 · 书籍详情</div>
+      <div class="brand">{html_escape(brand_name)}</div>
       <div class="time">更新时间：{html_escape(format_ts_cn(update_ts))}</div>
     </div>
     <div class="main">
@@ -526,9 +647,7 @@ def render_book_details_card(
         <div class="tags">{tags_html}</div>
 
         <div class="stats">
-          <div class="stat"><div class="k">总点击</div><div class="v">{html_escape(stat_click)}</div></div>
-          <div class="stat"><div class="k">总收藏</div><div class="v">{html_escape(stat_fav)}</div></div>
-          <div class="stat"><div class="k">总字数</div><div class="v">{html_escape(stat_words)}</div></div>
+          {stats_html}
         </div>
 
         <div class="chapter">
@@ -539,6 +658,8 @@ def render_book_details_card(
         <div class="props">
           {props_html}
         </div>
+
+        {chapter_rows_html}
 
         <div class="intro">
           <div class="k">简介</div>

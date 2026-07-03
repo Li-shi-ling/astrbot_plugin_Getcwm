@@ -94,6 +94,61 @@ def test_parse_fanqie_book_details_html_content_extracts_initial_state(core_modu
     assert details["data2"]["总字数"] == "1.7万"
 
 
+def test_parse_fanqie_book_details_html_content_keeps_extra_fields(core_module):
+    html = json.dumps(
+        {
+            "page": {
+                "bookId": "7657494514256333886",
+                "bookName": "Fanqie Book",
+                "authorName": "Author",
+                "authorId": "1651933863750916",
+                "mediaId": "1869504742207497",
+                "creationStatus": 1,
+                "categoryV2": '[{"Name":"都市脑洞"}]',
+                "abstract": "Intro",
+                "readCount": 44,
+                "wordNumber": 17450,
+                "chapterTotal": 5,
+                "lastChapterItemId": "7657832922602291736",
+                "lastChapterTitle": "第5章 磕cp被发现了！",
+                "lastPublishTime": "1782978266",
+                "volumeNameList": ["第一卷：2nd公演"],
+                "originalAuthors": [{"AuthorName": "Author"}],
+                "chapterListWithVolume": [
+                    [
+                        {
+                            "itemId": "7657494589602808382",
+                            "title": "第1章 开始营业的那天",
+                            "realChapterOrder": "1",
+                            "volume_name": "第一卷：2nd公演",
+                            "firstPassTime": "1782900773",
+                        },
+                        {
+                            "itemId": "7657832922602291736",
+                            "title": "第5章 磕cp被发现了！",
+                            "realChapterOrder": "5",
+                            "volume_name": "第一卷：2nd公演",
+                            "firstPassTime": "1782978266",
+                        },
+                    ]
+                ],
+            }
+        },
+        ensure_ascii=False,
+    )
+    html = f"<script>window.__INITIAL_STATE__={html};</script>"
+
+    details = core_module.parse_fanqie_book_details_html_content(html)
+
+    assert details["data"]["媒体ID"] == "1869504742207497"
+    assert details["data"]["作者ID"] == "1651933863750916"
+    assert details["data"]["最新章节ID"] == "7657832922602291736"
+    assert details["data2"]["阅读量"] == 44
+    assert details["fanqie_extra"]["chapter_total"] == 5
+    assert details["fanqie_extra"]["volume_names"] == ["第一卷：2nd公演"]
+    assert details["fanqie_extra"]["chapter_preview"][-1]["item_id"] == "7657832922602291736"
+
+
 def test_parse_fanqie_search_html_content_extracts_api_payload(core_module):
     html = json.dumps(
         {

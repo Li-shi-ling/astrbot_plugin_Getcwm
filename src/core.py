@@ -450,6 +450,45 @@ def _fanqie_word_text(value: Any) -> str:
     return str(count)
 
 
+def _fanqie_chapter_preview(page: dict[str, Any], limit: int = 4) -> list[dict[str, Any]]:
+    volumes = page.get("chapterListWithVolume") or []
+    chapters: list[dict[str, Any]] = []
+    if isinstance(volumes, list):
+        for volume in volumes:
+            if not isinstance(volume, list):
+                continue
+            for chapter in volume:
+                if isinstance(chapter, dict):
+                    chapters.append(chapter)
+
+    if not chapters:
+        rows = page.get("chapterList") or []
+        if isinstance(rows, list):
+            chapters = [row for row in rows if isinstance(row, dict)]
+
+    preview: list[dict[str, Any]] = []
+    for chapter in chapters[-max(1, int(limit)) :]:
+        title = str(chapter.get("title") or "").strip()
+        item_id = str(chapter.get("itemId") or chapter.get("item_id") or "").strip()
+        order = str(chapter.get("realChapterOrder") or chapter.get("order") or "").strip()
+        volume = str(chapter.get("volume_name") or chapter.get("volumeName") or "").strip()
+        first_pass_ts = _fanqie_ts(
+            chapter.get("firstPassTime") or chapter.get("first_pass_time")
+        )
+        preview.append(
+            {
+                "title": title,
+                "item_id": item_id,
+                "order": order,
+                "volume": volume,
+                "first_pass_time": first_pass_ts,
+                "need_pay": chapter.get("needPay"),
+                "locked": bool(chapter.get("isChapterLock")),
+            }
+        )
+    return preview
+
+
 def parse_fanqie_book_details_html_content(html_content: str) -> dict[str, Any] | None:
     state = _extract_window_initial_state(html_content)
     page = state.get("page") if isinstance(state, dict) else {}
@@ -509,6 +548,18 @@ def parse_fanqie_book_details_html_content(html_content: str) -> dict[str, Any] 
     word_count = page.get("wordNumber") or page.get("word_count") or 0
     read_count = page.get("readCount") or page.get("read_count") or 0
     chapter_total = page.get("chapterTotal") or 0
+    volume_names = page.get("volumeNameList") or []
+    if not isinstance(volume_names, list):
+        volume_names = []
+    volume_text = "、".join(str(item) for item in volume_names if str(item).strip())
+    original_authors = page.get("originalAuthors") or []
+    original_author_text = ""
+    if isinstance(original_authors, list):
+        original_author_text = "、".join(
+            str(item.get("AuthorName") or item.get("authorName") or "").strip()
+            for item in original_authors
+            if isinstance(item, dict)
+        ).strip("、")
 
     if not works_name and not author_name and not chapter_name:
         return None
@@ -527,11 +578,31 @@ def parse_fanqie_book_details_html_content(html_content: str) -> dict[str, Any] 
             "状态": tags[0] if tags else "未知",
             "章节数": chapter_total,
             "书籍ID": page.get("bookId") or "",
+            "媒体ID": page.get("mediaId") or "",
+            "作者ID": page.get("authorId") or page.get("creatorId") or "",
+            "最新章节ID": page.get("lastChapterItemId") or "",
+            "分卷": volume_text or "未知",
         },
         "data2": {
             "总点击": read_count,
+            "阅读量": read_count,
             "总收藏": "未知",
             "总字数": _fanqie_word_text(word_count),
+        },
+        "fanqie_extra": {
+            "book_id": page.get("bookId") or "",
+            "media_id": page.get("mediaId") or "",
+            "author_id": page.get("authorId") or page.get("creatorId") or "",
+            "author_avatar": fanqie_abspath_url(str(page.get("avatarUri") or "")),
+            "source_uri": page.get("sourceUri") or "",
+            "last_chapter_item_id": page.get("lastChapterItemId") or "",
+            "chapter_total": chapter_total,
+            "read_count": read_count,
+            "word_count": word_count,
+            "volume_names": volume_names,
+            "original_authors": original_author_text,
+            "author_description": page.get("description") or "",
+            "chapter_preview": _fanqie_chapter_preview(page),
         },
     }
 
