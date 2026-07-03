@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
-from types import ModuleType
 from types import MethodType
 from types import SimpleNamespace
 
@@ -215,101 +213,16 @@ def test_fanqie_client_get_book_details_uses_session(core_module):
     assert session.calls[0][1] == 6
 
 
-def test_fanqie_search_uses_playwright_when_api_is_verified(core_module):
+def test_fanqie_search_returns_blocked_payload_when_api_is_verified(core_module):
     session = FakeFanqieSearchSession()
     client = core_module.FanqieNovelClient(session=session, timeout_s=6)
-    seen: dict[str, object] = {}
-
-    def fake_playwright(**kwargs):
-        seen.update(kwargs)
-        return json.dumps(
-            {
-                "code": 0,
-                "data": {
-                    "search_book_data_list": [
-                        {
-                            "book_id": "7657494514256333886",
-                            "book_name": "Fanqie",
-                            "author": "Author",
-                        }
-                    ]
-                },
-            }
-        )
-
-    client._search_name_with_playwright = fake_playwright
 
     html = client.search_name("Fanqie", page=2)
+    payload = json.loads(html)
 
-    assert json.loads(html)["code"] == 0
-    assert seen["page_index"] == 1
-    assert seen["params"]["query_word"] == "Fanqie"
-
-
-def test_fanqie_playwright_fallback_closes_resources_on_error(
-    monkeypatch, core_module
-):
-    closed: list[str] = []
-
-    class FakePage:
-        def on(self, *_args, **_kwargs):
-            return None
-
-        def goto(self, *_args, **_kwargs):
-            return None
-
-        def wait_for_response(self, *_args, **_kwargs):
-            raise TimeoutError()
-
-        def evaluate(self, *_args, **_kwargs):
-            raise RuntimeError("boom")
-
-        def close(self):
-            closed.append("page")
-
-    class FakeContext:
-        def new_page(self):
-            return FakePage()
-
-        def close(self):
-            closed.append("context")
-
-    class FakeBrowser:
-        def new_context(self, **_kwargs):
-            return FakeContext()
-
-        def close(self):
-            closed.append("browser")
-
-    class FakeChromium:
-        def launch(self, **_kwargs):
-            return FakeBrowser()
-
-    class FakePlaywrightManager:
-        def __enter__(self):
-            return SimpleNamespace(chromium=FakeChromium())
-
-        def __exit__(self, *_args):
-            closed.append("playwright")
-
-    fake_sync_api = ModuleType("playwright.sync_api")
-    fake_sync_api.TimeoutError = TimeoutError
-    fake_sync_api.sync_playwright = lambda: FakePlaywrightManager()
-    monkeypatch.setitem(sys.modules, "playwright", ModuleType("playwright"))
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
-
-    client = core_module.FanqieNovelClient(session=FakeFanqieSearchSession())
-
-    result = client._search_name_with_playwright(
-        query="Fanqie",
-        page_index=0,
-        search_url="https://fanqienovel.com/search/Fanqie",
-        params={"query_word": "Fanqie"},
-    )
-
-    assert result == ""
-    assert closed[:3] == ["page", "context", "browser"]
-    assert "playwright" in closed
+    assert payload["code"] == -1001
+    assert payload["message"] == "FANQIE_SEARCH_BLOCKED"
+    assert payload["data"]["page"] == 2
 
 
 def test_parse_fanqie_reader_book_id_extracts_chapter_book_id(core_module):
@@ -460,6 +373,22 @@ async def test_fq_search_books_returns_structured_json(main_module, tmp_path):
     assert payload["returned_results"] == 1
     assert payload["results"][0]["book_id"] == 7657494514256333886
     assert payload["results"][0]["title"] == "番茄书"
+
+
+@pytest.mark.asyncio
+async def test_fq_search_reports_blocked_search(main_module, tmp_path):
+    plugin = make_plugin(main_module, tmp_path)
+    plugin._fq_client = SimpleNamespace(
+        search_name=lambda _keyword, _page: json.dumps(
+            {"code": -1001, "message": "FANQIE_SEARCH_BLOCKED"},
+            ensure_ascii=False,
+        )
+    )
+
+    results = [item async for item in plugin.fq_search(DummyEvent(), "alpha")]
+
+    assert len(results) == 1
+    assert "风控验证" in results[0]["text"]
 
 
 def test_fanqie_formatters_use_page_urls(main_module, tmp_path):

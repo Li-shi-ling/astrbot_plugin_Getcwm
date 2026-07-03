@@ -149,6 +149,23 @@ class GetcwmPlugin(Star):
             len(items),
         )
         if not items:
+            error_msg = self._fanqie_search_error_message(html)
+            if error_msg:
+                logger.warning(
+                    "[fq][llm_tool] 搜索失败：query=%r page=%s err=%s",
+                    query,
+                    safe_page,
+                    error_msg,
+                )
+                return json.dumps(
+                    {
+                        "query": query,
+                        "page": safe_page,
+                        "results": [],
+                        "error": error_msg,
+                    },
+                    ensure_ascii=False,
+                )
             snippet = re.sub(r"\s+", " ", (html or "")[:240]).strip()
             logger.warning(
                 "[fq][llm_tool] 搜索无结果：query=%r page=%s html_len=%s has_initial_state=%s has_json=%s snippet=%r",
@@ -483,6 +500,10 @@ class GetcwmPlugin(Star):
             )
 
             if not items:
+                error_msg = self._fanqie_search_error_message(html)
+                if error_msg:
+                    yield event.plain_result(error_msg)
+                    return
                 snippet = re.sub(r"\s+", " ", (html or "")[:240]).strip()
                 logger.warning(
                     "[fq] 搜索无结果：query=%r page=%s html_len=%s has_initial_state=%s has_json=%s snippet=%r",
@@ -1206,6 +1227,23 @@ class GetcwmPlugin(Star):
             return None
         m = re.search(r"/(?:book|page)/(\d+)", url)
         return int(m.group(1)) if m else None
+
+    def _fanqie_search_error_message(self, html_content: str) -> str:
+        raw = html_content or ""
+        try:
+            payload = json.loads(raw) if raw.strip().startswith("{") else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            return ""
+        code = payload.get("code")
+        message = str(payload.get("message") or "")
+        if code == -1001 or message == "FANQIE_SEARCH_BLOCKED":
+            return (
+                "番茄搜索接口触发风控验证，当前无法获取搜索结果。"
+                "请稍后重试，或直接使用 /fq 名片 书籍ID 后再订阅。"
+            )
+        return ""
 
     def _book_source_from_id(self, book_id: int) -> str:
         try:
