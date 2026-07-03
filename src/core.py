@@ -882,7 +882,13 @@ class FanqieNovelClient:
         query = str(name or "").strip()
         page_index = max(0, int(page) - 1)
         search_url = f"{FANQIE_BASE_URL}/search/{quote(query)}"
-        logger.info("[fq] Search request start. query=%r page=%s page_index=%s", query, page, page_index)
+        logger.info(
+            "[fq] Search request start. query=%r page=%s page_index=%s search_url=%s",
+            query,
+            page,
+            page_index,
+            search_url,
+        )
         try:
             warm = self.session.get(search_url, timeout=self.timeout_s)
             logger.debug(
@@ -916,7 +922,7 @@ class FanqieNovelClient:
         )
         elapsed_ms = int((time.perf_counter() - start_t) * 1000)
         logger.info(
-            "[fq] Search API response. query=%r page=%s status=%s elapsed_ms=%s final_url=%s text_len=%s content_type=%s",
+            "[fq] Search API response. query=%r page=%s status=%s elapsed_ms=%s final_url=%s text_len=%s content_type=%s has_verify=%s",
             query,
             page,
             getattr(resp, "status_code", None),
@@ -924,12 +930,32 @@ class FanqieNovelClient:
             getattr(resp, "url", None),
             len(getattr(resp, "text", "") or ""),
             (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip(),
+            bool(resp.headers.get("bdturing-verify")),
         )
         resp.raise_for_status()
         if resp.text:
             return resp.text
 
-        logger.warning("[fq] Search API returned empty body; fallback to search page. query=%r page=%s", query, page)
+        if resp.headers.get("bdturing-verify"):
+            logger.warning(
+                "[fq] Search API was blocked by bdturing verification; trying Playwright page fallback. query=%r page=%s",
+                query,
+                page,
+            )
+            playwright_text = self._search_name_with_playwright(
+                query=query,
+                page_index=page_index,
+                search_url=search_url,
+                params=params,
+            )
+            if playwright_text:
+                return playwright_text
+
+        logger.warning(
+            "[fq] Search API returned empty body; fallback to search page for diagnostics only. query=%r page=%s",
+            query,
+            page,
+        )
         fallback = self.session.get(search_url, timeout=self.timeout_s)
         logger.info(
             "[fq] Search fallback response. query=%r status=%s final_url=%s text_len=%s",
@@ -940,6 +966,122 @@ class FanqieNovelClient:
         )
         fallback.raise_for_status()
         return fallback.text
+
+    def _search_name_with_playwright(
+        self,
+        *,
+        query: str,
+        page_index: int,
+        search_url: str,
+        params: dict[str, Any],
+    ) -> str:
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.sync_api import sync_playwright
+        except Exception as exc:
+            logger.error(
+                "[fq] Playwright fallback unavailable; install playwright to search rendered Fanqie pages. query=%r err=%s",
+                query,
+                exc,
+            )
+            return ""
+
+        api_path = "/api/author/search/search_book/v1"
+        timeout_ms = max(5000, int(self.timeout_s * 1000))
+        logger.info(
+            "[fq] Playwright fallback start. query=%r page_index=%s search_url=%s",
+            query,
+            page_index,
+            search_url,
+        )
+        try:
+            with sync_playwright() as p:
+                browser = None
+                context = None
+                page = None
+                browser = p.chromium.launch(headless=True)
+                try:
+                    context = browser.new_context(
+                        user_agent=DEFAULT_HEADERS["User-Agent"],
+                        locale="zh-CN",
+                    )
+                    page = context.new_page()
+                    captured: list[str] = []
+
+                    def capture_response(response):
+                        if api_path not in response.url:
+                            return
+                        try:
+                            text = response.text()
+                        except Exception as exc:
+                            logger.warning(
+                                "[fq] Playwright response text failed. url=%s err=%s",
+                                response.url,
+                                exc,
+                            )
+                            return
+                        if text:
+                            captured.append(text)
+                            logger.info(
+                                "[fq] Playwright captured search response. status=%s url=%s text_len=%s",
+                                response.status,
+                                response.url,
+                                len(text),
+                            )
+
+                    page.on("response", capture_response)
+                    page.goto(search_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    try:
+                        page.wait_for_response(
+                            lambda response: api_path in response.url,
+                            timeout=timeout_ms,
+                        )
+                    except PlaywrightTimeoutError:
+                        logger.warning(
+                            "[fq] Playwright did not observe initial search API response. query=%r",
+                            query,
+                        )
+
+                    if page_index > 0 or not captured:
+                        api_url = f"{FANQIE_BASE_URL}{api_path}"
+                        result = page.evaluate(
+                            """async ({apiUrl, params}) => {
+                                const url = new URL(apiUrl);
+                                Object.entries(params).forEach(([key, value]) => {
+                                    url.searchParams.set(key, String(value));
+                                });
+                                const response = await fetch(url.toString(), {
+                                    credentials: "include",
+                                    headers: {"Accept": "application/json, text/plain, */*"}
+                                });
+                                return await response.text();
+                            }""",
+                            {"apiUrl": api_url, "params": params},
+                        )
+                        if result:
+                            captured.append(str(result))
+
+                    return captured[-1] if captured else ""
+                finally:
+                    for resource_name, resource in (
+                        ("page", page),
+                        ("context", context),
+                        ("browser", browser),
+                    ):
+                        if resource is None:
+                            continue
+                        try:
+                            resource.close()
+                        except Exception as exc:
+                            logger.warning(
+                                "[fq] Playwright %s close failed. query=%r err=%s",
+                                resource_name,
+                                query,
+                                exc,
+                            )
+        except Exception as exc:
+            logger.exception("[fq] Playwright fallback failed. query=%r err=%s", query, exc)
+            return ""
 
     def get_book_details(self, book_id: int) -> str:
         url = f"{FANQIE_BASE_URL}/page/{int(book_id)}"

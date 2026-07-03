@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
@@ -106,6 +107,11 @@ def _compact_number(value: Any) -> str:
     return str(num)
 
 
+def _extract_display_book_id(url: Any) -> str:
+    match = re.search(r"/(?:book|page)/(\d+)", str(url or ""))
+    return match.group(1) if match else ""
+
+
 def _render_html_to_png(
     *, html_str: str, size: tuple[int, int], output_dir: Path, filename: str
 ) -> Path:
@@ -143,7 +149,14 @@ def render_search_card(
         author = html_escape(item.get("author", ""))
         update_time = html_escape(item.get("update_time", ""))
         desc = html_escape(item.get("description", ""))
-        read_url = html_escape(item.get("read_url", ""))
+        raw_read_url = item.get("read_url", "")
+        read_url = html_escape(raw_read_url)
+        book_id = _extract_display_book_id(raw_read_url)
+        id_badge = (
+            f"<span class='book-id'>ID: {html_escape(book_id)}</span>"
+            if book_id
+            else ""
+        )
         desc_html = (
             f"<div class='desc'>{desc}</div>"
             if desc
@@ -155,7 +168,7 @@ def render_search_card(
               <div class="idx">{idx}</div>
               <div class="content">
                 <div class="t">{title}</div>
-                <div class="meta">作者：{author} · {update_time}</div>
+                <div class="meta">作者：{author} · {update_time} {id_badge}</div>
                 {desc_html}
                 <div class="url">{read_url}</div>
               </div>
@@ -269,6 +282,15 @@ def render_search_card(
       opacity: 0.88;
       {line_clamp_css(1)}
     }}
+    .book-id {{
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      color: rgba(10,10,20,0.92);
+      background: rgba(255,215,120,0.95);
+      font-weight: 900;
+    }}
     .desc {{
       margin-top: 7px;
       font-size: 13px;
@@ -349,14 +371,6 @@ def render_book_details_card(
         prop_items = [
             ("来源", prop_map.get("来源", "番茄小说")),
             ("状态", prop_map.get("状态", "")),
-            ("书籍ID", fanqie_extra.get("book_id") or prop_map.get("书籍ID", "")),
-            ("媒体ID", fanqie_extra.get("media_id") or prop_map.get("媒体ID", "")),
-            ("作者ID", fanqie_extra.get("author_id") or prop_map.get("作者ID", "")),
-            (
-                "最新章节ID",
-                fanqie_extra.get("last_chapter_item_id")
-                or prop_map.get("最新章节ID", ""),
-            ),
             ("分卷", "、".join(fanqie_extra.get("volume_names", []) or []) or prop_map.get("分卷", "")),
             ("原始作者", fanqie_extra.get("original_authors", "")),
         ]
@@ -407,11 +421,10 @@ def render_book_details_card(
                 continue
             order = _display_value(chapter.get("order"), "")
             title = _display_value(chapter.get("title"), "未知章节")
-            item_id = _display_value(chapter.get("item_id"), "")
             volume = _display_value(chapter.get("volume"), "")
             first_pass_ts = int(chapter.get("first_pass_time") or -1)
             prefix = f"第{order}章" if order else "章节"
-            meta_parts = [part for part in [volume, item_id, format_ts_cn(first_pass_ts) if first_pass_ts > 0 else ""] if part]
+            meta_parts = [part for part in [volume, format_ts_cn(first_pass_ts) if first_pass_ts > 0 else ""] if part]
             rows.append(
                 f"<div class='chapter-row'><div class='chapter-title'>{html_escape(prefix)} · {html_escape(title)}</div><div class='chapter-meta'>{html_escape(' / '.join(meta_parts))}</div></div>"
             )

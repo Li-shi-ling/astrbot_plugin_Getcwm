@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
+from types import ModuleType
 from types import MethodType
 from types import SimpleNamespace
 
@@ -60,6 +62,30 @@ class FakeSession:
     def get(self, url: str, timeout=None, headers=None, **_kwargs):
         self.calls.append((url, timeout, headers))
         return self.response
+
+
+class FakeFanqieSearchResponse:
+    def __init__(self, text: str = "", headers: dict | None = None) -> None:
+        self.text = text
+        self.content = text.encode("utf-8")
+        self.headers = headers or {"Content-Type": "application/json"}
+        self.status_code = 200
+        self.url = "https://fanqienovel.com/api/author/search/search_book/v1"
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class FakeFanqieSearchSession:
+    def __init__(self) -> None:
+        self.headers = {}
+        self.calls: list[str] = []
+
+    def get(self, url: str, **_kwargs):
+        self.calls.append(url)
+        if url.startswith("https://fanqienovel.com/search/"):
+            return FakeFanqieSearchResponse("<html>loading</html>", {"Content-Type": "text/html"})
+        return FakeFanqieSearchResponse("", {"Content-Type": "application/json", "bdturing-verify": "{}"})
 
 
 def make_plugin(main_module, tmp_path):
@@ -187,6 +213,103 @@ def test_fanqie_client_get_book_details_uses_session(core_module):
     assert "Fanqie" in html
     assert session.calls[0][0].endswith("/page/7657494514256333886")
     assert session.calls[0][1] == 6
+
+
+def test_fanqie_search_uses_playwright_when_api_is_verified(core_module):
+    session = FakeFanqieSearchSession()
+    client = core_module.FanqieNovelClient(session=session, timeout_s=6)
+    seen: dict[str, object] = {}
+
+    def fake_playwright(**kwargs):
+        seen.update(kwargs)
+        return json.dumps(
+            {
+                "code": 0,
+                "data": {
+                    "search_book_data_list": [
+                        {
+                            "book_id": "7657494514256333886",
+                            "book_name": "Fanqie",
+                            "author": "Author",
+                        }
+                    ]
+                },
+            }
+        )
+
+    client._search_name_with_playwright = fake_playwright
+
+    html = client.search_name("Fanqie", page=2)
+
+    assert json.loads(html)["code"] == 0
+    assert seen["page_index"] == 1
+    assert seen["params"]["query_word"] == "Fanqie"
+
+
+def test_fanqie_playwright_fallback_closes_resources_on_error(
+    monkeypatch, core_module
+):
+    closed: list[str] = []
+
+    class FakePage:
+        def on(self, *_args, **_kwargs):
+            return None
+
+        def goto(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_response(self, *_args, **_kwargs):
+            raise TimeoutError()
+
+        def evaluate(self, *_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        def close(self):
+            closed.append("page")
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            closed.append("context")
+
+    class FakeBrowser:
+        def new_context(self, **_kwargs):
+            return FakeContext()
+
+        def close(self):
+            closed.append("browser")
+
+    class FakeChromium:
+        def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywrightManager:
+        def __enter__(self):
+            return SimpleNamespace(chromium=FakeChromium())
+
+        def __exit__(self, *_args):
+            closed.append("playwright")
+
+    fake_sync_api = ModuleType("playwright.sync_api")
+    fake_sync_api.TimeoutError = TimeoutError
+    fake_sync_api.sync_playwright = lambda: FakePlaywrightManager()
+    monkeypatch.setitem(sys.modules, "playwright", ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+
+    client = core_module.FanqieNovelClient(session=FakeFanqieSearchSession())
+
+    result = client._search_name_with_playwright(
+        query="Fanqie",
+        page_index=0,
+        search_url="https://fanqienovel.com/search/Fanqie",
+        params={"query_word": "Fanqie"},
+    )
+
+    assert result == ""
+    assert closed[:3] == ["page", "context", "browser"]
+    assert "playwright" in closed
 
 
 def test_parse_fanqie_reader_book_id_extracts_chapter_book_id(core_module):
