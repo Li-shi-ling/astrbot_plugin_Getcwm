@@ -536,6 +536,32 @@ def parse_fanqie_book_details_html_content(html_content: str) -> dict[str, Any] 
     }
 
 
+def parse_fanqie_reader_book_id(html_content: str) -> int | None:
+    state = _extract_window_initial_state(html_content)
+    reader = state.get("reader") if isinstance(state, dict) else {}
+    reader = reader if isinstance(reader, dict) else {}
+    chapter_data = reader.get("chapterData") if isinstance(reader, dict) else {}
+    chapter_data = chapter_data if isinstance(chapter_data, dict) else {}
+
+    raw_book_id = chapter_data.get("bookId") or chapter_data.get("book_id")
+    if raw_book_id:
+        try:
+            return int(raw_book_id)
+        except Exception:
+            logger.warning("[fq] Reader state has invalid bookId: %r", raw_book_id)
+
+    match = re.search(r'"bookId"\s*:\s*"?(\d+)"?', html_content or "")
+    if match:
+        return int(match.group(1))
+
+    logger.warning(
+        "[fq] Reader page did not expose bookId. html_len=%s has_initial_state=%s",
+        len(html_content or ""),
+        "window.__INITIAL_STATE__=" in (html_content or ""),
+    )
+    return None
+
+
 def _normalize_fanqie_search_item(item: dict[str, Any]) -> dict[str, str] | None:
     book_id = str(item.get("book_id") or item.get("bookId") or "").strip()
     title = str(item.get("book_name") or item.get("bookName") or "").strip()
@@ -575,26 +601,41 @@ def parse_fanqie_search_html_content(html_content: str) -> list[dict[str, str]]:
         data = data if isinstance(data, dict) else {}
         rows = data.get("search_book_data_list") or data.get("searchBookList") or []
         if isinstance(rows, list):
-            return [
+            results = [
                 normalized
                 for item in rows
                 if isinstance(item, dict)
                 for normalized in [_normalize_fanqie_search_item(item)]
                 if normalized
             ]
+            logger.debug(
+                "[fq] Parsed search API payload. code=%s rows=%s results=%s html_len=%s",
+                payload.get("code"),
+                len(rows),
+                len(results),
+                len(raw),
+            )
+            return results
 
     state = _extract_window_initial_state(raw)
     search = state.get("search") if isinstance(state, dict) else {}
     search = search if isinstance(search, dict) else {}
     rows = search.get("searchBookList") or []
     if isinstance(rows, list):
-        return [
+        results = [
             normalized
             for item in rows
             if isinstance(item, dict)
             for normalized in [_normalize_fanqie_search_item(item)]
             if normalized
         ]
+        logger.debug(
+            "[fq] Parsed search initial state. rows=%s results=%s html_len=%s",
+            len(rows),
+            len(results),
+            len(raw),
+        )
+        return results
 
     soup = BeautifulSoup(raw, "html.parser")
     results: list[dict[str, str]] = []
@@ -620,6 +661,12 @@ def parse_fanqie_search_html_content(html_content: str) -> list[dict[str, str]]:
                 "read_url": fanqie_abspath_url(href),
             }
         )
+    logger.debug(
+        "[fq] Parsed search DOM fallback. dom_items=%s results=%s html_len=%s",
+        len(soup.select(".search-book-item")),
+        len(results),
+        len(raw),
+    )
     return results
 
 
@@ -764,21 +811,31 @@ class FanqieNovelClient:
         query = str(name or "").strip()
         page_index = max(0, int(page) - 1)
         search_url = f"{FANQIE_BASE_URL}/search/{quote(query)}"
+        logger.info("[fq] Search request start. query=%r page=%s page_index=%s", query, page, page_index)
         try:
-            self.session.get(search_url, timeout=self.timeout_s)
-        except Exception:
-            logger.debug("Fanqie search page warm-up failed", exc_info=True)
+            warm = self.session.get(search_url, timeout=self.timeout_s)
+            logger.debug(
+                "[fq] Search warm-up response. query=%r status=%s final_url=%s text_len=%s",
+                query,
+                getattr(warm, "status_code", None),
+                getattr(warm, "url", None),
+                len(getattr(warm, "text", "") or ""),
+            )
+        except Exception as exc:
+            logger.warning("[fq] Search warm-up failed. query=%r err=%s", query, exc, exc_info=True)
 
         url = f"{FANQIE_BASE_URL}/api/author/search/search_book/v1"
+        params = {
+            "filter": "127,127,127,127",
+            "page_count": 10,
+            "page_index": page_index,
+            "query_type": 0,
+            "query_word": query,
+        }
+        start_t = time.perf_counter()
         resp = self.session.get(
             url,
-            params={
-                "filter": "127,127,127,127",
-                "page_count": 10,
-                "page_index": page_index,
-                "query_type": 0,
-                "query_word": query,
-            },
+            params=params,
             headers={
                 **DEFAULT_HEADERS,
                 "Accept": "application/json, text/plain, */*",
@@ -786,16 +843,63 @@ class FanqieNovelClient:
             },
             timeout=self.timeout_s,
         )
+        elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+        logger.info(
+            "[fq] Search API response. query=%r page=%s status=%s elapsed_ms=%s final_url=%s text_len=%s content_type=%s",
+            query,
+            page,
+            getattr(resp, "status_code", None),
+            elapsed_ms,
+            getattr(resp, "url", None),
+            len(getattr(resp, "text", "") or ""),
+            (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip(),
+        )
         resp.raise_for_status()
         if resp.text:
             return resp.text
 
+        logger.warning("[fq] Search API returned empty body; fallback to search page. query=%r page=%s", query, page)
         fallback = self.session.get(search_url, timeout=self.timeout_s)
+        logger.info(
+            "[fq] Search fallback response. query=%r status=%s final_url=%s text_len=%s",
+            query,
+            getattr(fallback, "status_code", None),
+            getattr(fallback, "url", None),
+            len(getattr(fallback, "text", "") or ""),
+        )
         fallback.raise_for_status()
         return fallback.text
 
     def get_book_details(self, book_id: int) -> str:
         url = f"{FANQIE_BASE_URL}/page/{int(book_id)}"
+        logger.info("[fq] Book page request start. book_id=%s url=%s", int(book_id), url)
+        start_t = time.perf_counter()
         resp = self.session.get(url, timeout=self.timeout_s)
+        elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+        logger.info(
+            "[fq] Book page response. book_id=%s status=%s elapsed_ms=%s final_url=%s text_len=%s",
+            int(book_id),
+            getattr(resp, "status_code", None),
+            elapsed_ms,
+            getattr(resp, "url", None),
+            len(getattr(resp, "text", "") or ""),
+        )
+        resp.raise_for_status()
+        return resp.text
+
+    def get_reader_details(self, item_id: int) -> str:
+        url = f"{FANQIE_BASE_URL}/reader/{int(item_id)}"
+        logger.info("[fq] Reader page request start. item_id=%s url=%s", int(item_id), url)
+        start_t = time.perf_counter()
+        resp = self.session.get(url, timeout=self.timeout_s)
+        elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+        logger.info(
+            "[fq] Reader page response. item_id=%s status=%s elapsed_ms=%s final_url=%s text_len=%s",
+            int(item_id),
+            getattr(resp, "status_code", None),
+            elapsed_ms,
+            getattr(resp, "url", None),
+            len(getattr(resp, "text", "") or ""),
+        )
         resp.raise_for_status()
         return resp.text

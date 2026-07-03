@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import MethodType
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 
 class DummyContext:
@@ -130,6 +132,131 @@ def test_fanqie_client_get_book_details_uses_session(core_module):
     assert "Fanqie" in html
     assert session.calls[0][0].endswith("/page/7657494514256333886")
     assert session.calls[0][1] == 6
+
+
+def test_parse_fanqie_reader_book_id_extracts_chapter_book_id(core_module):
+    html = """
+    <script>
+    window.__INITIAL_STATE__={"reader":{"chapterData":{"bookId":"7657494514256333886","itemId":"7657494589602808382"}}};
+    </script>
+    """
+
+    assert core_module.parse_fanqie_reader_book_id(html) == 7657494514256333886
+
+
+class FanqieReaderFallbackClient:
+    def __init__(self, reader_id: int, book_id: int, reader_html: str, book_html: str):
+        self.reader_id = reader_id
+        self.book_id = book_id
+        self.reader_html = reader_html
+        self.book_html = book_html
+        self.session = SimpleNamespace()
+        self.calls: list[tuple[str, int]] = []
+
+    def get_book_details(self, book_id: int) -> str:
+        self.calls.append(("book", int(book_id)))
+        if int(book_id) == self.reader_id:
+            response = requests.Response()
+            response.status_code = 404
+            response.url = f"https://fanqienovel.com/page/{book_id}"
+            raise requests.HTTPError("404 Client Error", response=response)
+        assert int(book_id) == self.book_id
+        return self.book_html
+
+    def get_reader_details(self, item_id: int) -> str:
+        self.calls.append(("reader", int(item_id)))
+        assert int(item_id) == self.reader_id
+        return self.reader_html
+
+
+def make_fanqie_state_html(kind: str, payload: dict) -> str:
+    return (
+        "<script>window.__INITIAL_STATE__="
+        + json.dumps({kind: payload}, ensure_ascii=False)
+        + ";</script>"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fanqie_fetch_details_falls_back_from_reader_id(main_module, tmp_path):
+    plugin = make_plugin(main_module, tmp_path)
+    reader_id = 7657494589602808382
+    book_id = 7657494514256333886
+    plugin._fq_client = FanqieReaderFallbackClient(
+        reader_id,
+        book_id,
+        make_fanqie_state_html(
+            "reader",
+            {"chapterData": {"bookId": str(book_id), "itemId": str(reader_id)}},
+        ),
+        make_fanqie_state_html(
+            "page",
+            {
+                "bookId": str(book_id),
+                "bookName": "Fanqie Book",
+                "authorName": "Author",
+                "lastPublishTime": "1782978266",
+                "lastChapterTitle": "Chapter 1",
+            },
+        ),
+    )
+
+    resolved_book_id, details = await plugin._fetch_fanqie_book_details_by_any_id(
+        reader_id
+    )
+
+    assert resolved_book_id == book_id
+    assert details["Works_Name"] == "Fanqie Book"
+    assert plugin._fq_client.calls == [
+        ("book", reader_id),
+        ("reader", reader_id),
+        ("book", book_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fq_subscribe_uses_resolved_book_id_for_reader_input(
+    main_module, tmp_path
+):
+    plugin = make_plugin(main_module, tmp_path)
+    reader_id = 7657494589602808382
+    book_id = 7657494514256333886
+    plugin._fq_client = FanqieReaderFallbackClient(
+        reader_id,
+        book_id,
+        make_fanqie_state_html(
+            "reader",
+            {"chapterData": {"bookId": str(book_id), "itemId": str(reader_id)}},
+        ),
+        make_fanqie_state_html(
+            "page",
+            {
+                "bookId": str(book_id),
+                "bookName": "Fanqie Book",
+                "authorName": "Author",
+                "lastPublishTime": "1782978266",
+                "lastChapterTitle": "Chapter 1",
+            },
+        ),
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_yield_card(self, event, resolved_id, data):
+        seen["card_id"] = resolved_id
+        yield event.plain_result(f"card:{resolved_id}:{data['Works_Name']}")
+
+    async def fake_subscribe(self, event, resolved_id, *, source="cwm"):
+        seen["subscribe_id"] = resolved_id
+        seen["source"] = source
+        return f"subscribed:{resolved_id}:{source}"
+
+    plugin._yield_fanqie_card = MethodType(fake_yield_card, plugin)
+    plugin._subscribe = MethodType(fake_subscribe, plugin)
+
+    results = [item async for item in plugin.fq_subscribe(DummyEvent(), reader_id)]
+
+    assert seen == {"card_id": book_id, "subscribe_id": book_id, "source": "fq"}
+    assert results[-1]["text"] == f"subscribed:{book_id}:fq"
 
 
 @pytest.mark.asyncio

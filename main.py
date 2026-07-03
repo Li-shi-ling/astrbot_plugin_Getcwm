@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import requests
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -23,6 +24,7 @@ from .src.core import (
     FanqieNovelClient,
     format_ts_cn,
     parse_fanqie_book_details_html_content,
+    parse_fanqie_reader_book_id,
     parse_fanqie_search_html_content,
     parse_book_details_html_content,
     parse_search_html_content,
@@ -131,8 +133,32 @@ class GetcwmPlugin(Star):
 
         safe_page = max(1, self._safe_int(page, 1))
         safe_limit = max(1, min(10, self._safe_int(max_items, 5)))
+        logger.info(
+            "[fq][llm_tool] 搜索开始：query=%r page=%s limit=%s",
+            query,
+            safe_page,
+            safe_limit,
+        )
         html = await self._run_sync(self._fq_client.search_name, query, safe_page)
         items = parse_fanqie_search_html_content(html)
+        logger.info(
+            "[fq][llm_tool] 搜索解析完成：query=%r page=%s html_len=%s item_count=%s",
+            query,
+            safe_page,
+            len(html or ""),
+            len(items),
+        )
+        if not items:
+            snippet = re.sub(r"\s+", " ", (html or "")[:240]).strip()
+            logger.warning(
+                "[fq][llm_tool] 搜索无结果：query=%r page=%s html_len=%s has_initial_state=%s has_json=%s snippet=%r",
+                query,
+                safe_page,
+                len(html or ""),
+                "window.__INITIAL_STATE__=" in (html or ""),
+                (html or "").lstrip().startswith("{"),
+                snippet,
+            )
 
         results: list[dict[str, object]] = []
         for item in items[:safe_limit]:
@@ -445,10 +471,28 @@ class GetcwmPlugin(Star):
                 return
 
             page = max(1, int(page))
+            logger.info("[fq] 搜索开始：query=%r page=%s", query, page)
             html = await self._run_sync(self._fq_client.search_name, query, page)
             items = parse_fanqie_search_html_content(html)
+            logger.info(
+                "[fq] 搜索解析完成：query=%r page=%s html_len=%s item_count=%s",
+                query,
+                page,
+                len(html or ""),
+                len(items),
+            )
 
             if not items:
+                snippet = re.sub(r"\s+", " ", (html or "")[:240]).strip()
+                logger.warning(
+                    "[fq] 搜索无结果：query=%r page=%s html_len=%s has_initial_state=%s has_json=%s snippet=%r",
+                    query,
+                    page,
+                    len(html or ""),
+                    "window.__INITIAL_STATE__=" in (html or ""),
+                    (html or "").lstrip().startswith("{"),
+                    snippet,
+                )
                 yield event.plain_result("未找到相关书籍")
                 return
 
@@ -482,33 +526,113 @@ class GetcwmPlugin(Star):
     async def fq_novel_card(self, event: AstrMessageEvent, book_id: int):
         """/fq 名片 [书籍id]，获取番茄小说名片"""
         try:
-            bid = int(book_id)
-            html = await self._run_sync(self._fq_client.get_book_details, bid)
-            data = parse_fanqie_book_details_html_content(html) or {}
+            resolved_bid, data = await self._fetch_fanqie_book_details_by_any_id(
+                int(book_id)
+            )
 
-            if not data:
-                yield event.plain_result("未能获取到书籍信息")
-                return
-
-            async def gen_img():
-                return await self._run_sync(
-                    render_book_details_card,
-                    data,
-                    output_dir=self._render_dir,
-                    session=self._fq_client.session,
-                )
-
-            def gen_text():
-                return self._format_book_details_text(data, book_id=bid)
-
-            async for result in self._generate_image_or_fallback(
-                event, gen_img, gen_text
-            ):
+            async for result in self._yield_fanqie_card(event, resolved_bid, data):
                 yield result
 
         except Exception as e:
             logger.exception("fq 名片失败: %s", e)
             yield event.plain_result(f"获取小说名片失败: {str(e)}")
+
+    async def _fetch_fanqie_book_details_by_any_id(
+        self, raw_id: int
+    ) -> tuple[int, dict]:
+        input_id = int(raw_id)
+        logger.info("[fq] 解析番茄书籍信息开始：input_id=%s", input_id)
+
+        try:
+            html = await self._run_sync(self._fq_client.get_book_details, input_id)
+            data = parse_fanqie_book_details_html_content(html) or {}
+            if not data:
+                logger.error(
+                    "[fq] 书籍页解析为空：input_id=%s html_len=%s",
+                    input_id,
+                    len(html or ""),
+                )
+                raise ValueError("未能从番茄书籍页解析到书籍信息")
+
+            logger.info(
+                "[fq] 解析番茄书籍信息成功：mode=page input_id=%s title=%r chapter=%r update_time=%s",
+                input_id,
+                data.get("Works_Name"),
+                data.get("Chapter_Name"),
+                data.get("Update_Time"),
+            )
+            return input_id, data
+
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status != 404:
+                logger.exception(
+                    "[fq] 书籍页请求失败且不可回退：input_id=%s status=%s",
+                    input_id,
+                    status,
+                )
+                raise
+            logger.warning(
+                "[fq] 书籍页 404，尝试按章节 reader ID 回退：input_id=%s",
+                input_id,
+            )
+
+        reader_html = await self._run_sync(self._fq_client.get_reader_details, input_id)
+        resolved_book_id = parse_fanqie_reader_book_id(reader_html)
+        if resolved_book_id is None:
+            logger.error(
+                "[fq] reader 页无法解析 bookId：input_id=%s html_len=%s",
+                input_id,
+                len(reader_html or ""),
+            )
+            raise ValueError("无法从番茄章节 ID 解析到书籍 ID")
+
+        logger.info(
+            "[fq] reader ID 已解析为书籍 ID：input_id=%s resolved_book_id=%s",
+            input_id,
+            resolved_book_id,
+        )
+        html = await self._run_sync(self._fq_client.get_book_details, resolved_book_id)
+        data = parse_fanqie_book_details_html_content(html) or {}
+        if not data:
+            logger.error(
+                "[fq] 回退后的书籍页解析为空：input_id=%s resolved_book_id=%s html_len=%s",
+                input_id,
+                resolved_book_id,
+                len(html or ""),
+            )
+            raise ValueError("已解析到书籍 ID，但未能获取番茄书籍信息")
+
+        logger.info(
+            "[fq] 解析番茄书籍信息成功：mode=reader input_id=%s resolved_book_id=%s title=%r chapter=%r update_time=%s",
+            input_id,
+            resolved_book_id,
+            data.get("Works_Name"),
+            data.get("Chapter_Name"),
+            data.get("Update_Time"),
+        )
+        return resolved_book_id, data
+
+    async def _yield_fanqie_card(
+        self, event: AstrMessageEvent, book_id: int, data: dict
+    ):
+        if not data:
+            yield event.plain_result("未能获取到书籍信息")
+            return
+
+        async def gen_img():
+            return await self._run_sync(
+                render_book_details_card,
+                data,
+                output_dir=self._render_dir,
+                session=self._fq_client.session,
+            )
+
+        def gen_text():
+            return self._format_book_details_text(data, book_id=book_id)
+
+        async for result in self._generate_image_or_fallback(event, gen_img, gen_text):
+            yield result
 
     @fq.command("详情")
     async def fq_details(self, event: AstrMessageEvent, book_id: int):
@@ -519,10 +643,17 @@ class GetcwmPlugin(Star):
     @fq.command("订阅")
     async def fq_subscribe(self, event: AstrMessageEvent, book_id: int):
         """/fq 订阅 [书id],在当前会话订阅id对应的番茄小说"""
-        async for result in self.fq_novel_card(event, book_id):
-            yield result
-        msg = await self._subscribe(event, int(book_id), source="fq")
-        yield event.plain_result(msg)
+        try:
+            resolved_bid, data = await self._fetch_fanqie_book_details_by_any_id(
+                int(book_id)
+            )
+            async for result in self._yield_fanqie_card(event, resolved_bid, data):
+                yield result
+            msg = await self._subscribe(event, resolved_bid, source="fq")
+            yield event.plain_result(msg)
+        except Exception as e:
+            logger.exception("fq 订阅失败: %s", e)
+            yield event.plain_result(f"订阅失败: {str(e)}")
 
     @fq.command("订阅列表")
     async def fq_subscribe_list(self, event: AstrMessageEvent, umo: str | None = None):
