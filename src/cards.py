@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import math
+import base64
 import re
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+import requests
 
 try:
     from html2image import Html2Image  # type: ignore
@@ -50,8 +54,16 @@ def _calc_search_card_height(num_items: int) -> int:
     )
 
 
+def _estimated_text_lines(text_len: int, chars_per_line: int, min_lines: int = 1) -> int:
+    return max(int(min_lines), math.ceil(max(0, int(text_len)) / max(1, chars_per_line)))
+
+
 def _calc_book_details_card_height(
-    num_tags: int, num_props: int, num_chapters: int = 0
+    num_tags: int,
+    num_props: int,
+    num_chapters: int = 0,
+    chapter_name_len: int = 0,
+    chapter_preview_title_len: int = 0,
 ) -> int:
     tags = max(0, int(num_tags))
     props = max(0, int(num_props))
@@ -66,12 +78,15 @@ def _calc_book_details_card_height(
     tag_rows = math.ceil(min(tags, 10) / 3) if tags else 0
     tags_h = 10 + (tag_rows * 27) + max(0, tag_rows - 1) * 8
     stats_h = 82
-    chapter_h = 96
+    chapter_lines = _estimated_text_lines(chapter_name_len, 32, min_lines=2)
+    chapter_h = 48 + chapter_lines * 24
     prop_rows = math.ceil(min(props, 8) / 2) if props else 0
     props_h = 12 + (prop_rows * 58) + max(0, prop_rows - 1) * 10
     chapters_h = 0
     if num_chapters > 0:
-        chapters_h = 14 + 36 + min(int(num_chapters), 4) * 48
+        preview_lines = _estimated_text_lines(chapter_preview_title_len, 40)
+        row_h = 34 + preview_lines * 20
+        chapters_h = 14 + 36 + min(int(num_chapters), 4) * row_h
     intro_h = 124
 
     right_h = (
@@ -88,6 +103,11 @@ def _calc_book_details_card_height(
     main_h = max(cover_h, right_h)
     safety = 100
     return body_pad_y + card_pad_y + top_h + main_mt + main_h + safety
+
+
+def _calc_subscribe_update_card_height(chapter_name_len: int = 0) -> int:
+    chapter_lines = _estimated_text_lines(chapter_name_len, 36, min_lines=3)
+    return 496 + chapter_lines * 28
 
 
 def _display_value(value: Any, fallback: str = "未知") -> str:
@@ -112,9 +132,551 @@ def _extract_display_book_id(url: Any) -> str:
     return match.group(1) if match else ""
 
 
-def _render_html_to_png(
-    *, html_str: str, size: tuple[int, int], output_dir: Path, filename: str
+_CARD_SOURCE_PROFILES: dict[str, dict[str, str]] = {
+    "cwm": {
+        "name": "刺猬猫",
+        "search_title": "刺猬猫 · 搜索结果",
+        "detail_title": "刺猬猫 · 书籍详情",
+        "subscribe_title": "刺猬猫 · 订阅更新",
+        "book_url_template": "https://www.ciweimao.com/book/{book_id}",
+    },
+    "fq": {
+        "name": "番茄小说",
+        "search_title": "番茄小说 · 搜索结果",
+        "detail_title": "番茄小说 · 书籍详情",
+        "subscribe_title": "番茄小说 · 订阅更新",
+        "book_url_template": "https://fanqienovel.com/page/{book_id}",
+    },
+}
+
+
+_CARD_STYLES = {
+    "glass",
+    "light",
+    "industrial",
+    "retro_win",
+    "snowcap_shop",
+    "constructivist_people",
+}
+
+
+@lru_cache(maxsize=64)
+def _asset_data_url(asset_group: str, filename: str) -> str:
+    asset_path = Path(__file__).resolve().parents[1] / "assets" / asset_group / filename
+    try:
+        data = asset_path.read_bytes()
+    except OSError:
+        return ""
+
+    suffix = asset_path.suffix.lower().lstrip(".") or "png"
+    mime = "jpeg" if suffix in {"jpg", "jpeg"} else suffix
+    return f"data:image/{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _normalize_card_style(card_style: Any) -> str:
+    style = str(card_style or "glass").strip().lower()
+    return style if style in _CARD_STYLES else "glass"
+
+
+def _card_theme_css(card_style: Any) -> str:
+    style = _normalize_card_style(card_style)
+    if style == "light":
+        return """
+  <style id="getcwm-card-theme">
+    body {
+      background:
+        radial-gradient(1000px 540px at 12% 18%, rgba(14,165,233,0.16), transparent 60%),
+        radial-gradient(920px 540px at 88% 22%, rgba(245,158,11,0.14), transparent 62%),
+        linear-gradient(135deg, #f8fafc 0%, #eef2f7 100%) !important;
+      color: #0f172a !important;
+    }
+    .card, .item, .stat, .chapter, .chapter-list, .block {
+      background: rgba(255,255,255,0.88) !important;
+      border-color: rgba(2,6,23,0.12) !important;
+      box-shadow: 0 18px 45px rgba(15,23,42,0.14) !important;
+    }
+    .kv, .intro { background: rgba(248,250,252,0.92) !important; border-color: rgba(2,6,23,0.10) !important; }
+    .badge, .idx, .tag { background: linear-gradient(135deg, #f59e0b, #38bdf8) !important; color: #111827 !important; }
+    .url, .meta, .sub, .time, .footer, .author, .k, .section-title, .chapter-meta { color: #475569 !important; opacity: 1 !important; }
+  </style>
+        """
+    if style == "industrial":
+        return """
+  <style id="getcwm-card-theme">
+    body {
+      background:
+        linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(148,163,184,0.06) 1px, transparent 1px),
+        radial-gradient(900px 560px at 86% 18%, rgba(34,211,238,0.16), transparent 62%),
+        radial-gradient(900px 560px at 14% 86%, rgba(251,191,36,0.12), transparent 64%),
+        linear-gradient(135deg, #070a0f 0%, #0b1220 55%, #020617 100%) !important;
+      background-size: 28px 28px, 28px 28px, auto, auto, auto !important;
+      color: #e5e7eb !important;
+    }
+    .card, .item, .stat, .chapter, .chapter-list, .block {
+      border-radius: 8px !important;
+      background: rgba(17,24,39,0.92) !important;
+      border-color: rgba(148,163,184,0.24) !important;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.48) !important;
+    }
+    .kv, .intro { border-radius: 6px !important; background: rgba(2,6,23,0.80) !important; }
+    .badge, .idx, .tag { border-radius: 4px !important; background: linear-gradient(135deg, #fbbf24, #22d3ee) !important; color: #020617 !important; }
+    .h1, .title { text-shadow: 0 0 18px rgba(34,211,238,0.16) !important; }
+  </style>
+        """
+    if style == "retro_win":
+        return """
+  <style id="getcwm-card-theme">
+    body {
+      background: #c5ced1 !important;
+      color: #1a1a1a !important;
+      font-family: "Microsoft YaHei", "SimSun", Arial, sans-serif !important;
+    }
+    .card {
+      border-radius: 0 !important;
+      background: #f4f0e6 !important;
+      border: 3px solid #1a1a1a !important;
+      box-shadow: 8px 8px 0 #1a1a1a !important;
+    }
+    .card:before { display: none !important; }
+    .item, .stat, .chapter, .chapter-list, .block, .kv, .intro {
+      border-radius: 0 !important;
+      background: #ffffff !important;
+      border: 2px solid #1a1a1a !important;
+      box-shadow: none !important;
+    }
+    .badge, .idx, .tag {
+      border-radius: 0 !important;
+      background: #f39800 !important;
+      color: #1a1a1a !important;
+      border: 2px solid #1a1a1a !important;
+      box-shadow: none !important;
+    }
+    .h1, .title { text-shadow: none !important; }
+    .url, .meta, .sub, .time, .footer, .author, .k, .section-title, .chapter-meta { color: #3b3b3b !important; opacity: 1 !important; }
+  </style>
+        """
+    if style == "snowcap_shop":
+        sign = _asset_data_url("snowcap_shop", "sign.png")
+        bottle = _asset_data_url("snowcap_shop", "bottle.png")
+        bag = _asset_data_url("snowcap_shop", "bag.png")
+        tray = _asset_data_url("snowcap_shop", "tray.png")
+        mascot = _asset_data_url("snowcap_shop", "mascot.png")
+        return f"""
+  <style id="getcwm-card-theme">
+    body {{
+      background:
+        linear-gradient(to right, rgba(255,255,255,0.26) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.24) 1px, transparent 1px),
+        radial-gradient(740px 420px at 15% 0%, rgba(239,223,199,0.24), transparent 64%),
+        linear-gradient(180deg, #9aae7c, #7f965f) !important;
+      background-size: 48px 48px, 48px 48px, auto, auto !important;
+      color: #1f241a !important;
+      font-family: "Bahnschrift", "Microsoft YaHei", "PingFang SC", Arial, sans-serif !important;
+    }}
+    .card {{
+      border: 5px solid #5d7028 !important;
+      border-radius: 18px !important;
+      background:
+        linear-gradient(180deg, rgba(255,247,233,0.92), rgba(239,223,199,0.96)) !important;
+      box-shadow: 14px 14px 0 rgba(31,36,26,0.16) !important;
+    }}
+    .card:before {{
+      content: "" !important;
+      position: absolute !important;
+      inset: 12px !important;
+      width: auto !important;
+      height: auto !important;
+      border: 2px dashed rgba(93,112,40,0.42) !important;
+      border-radius: 11px !important;
+      background:
+        url("{bottle}") no-repeat left 10px bottom 12px / 82px auto,
+        url("{bag}") no-repeat right 16px top 76px / 84px auto,
+        url("{tray}") no-repeat right 18px bottom 14px / 76px auto !important;
+      transform: none !important;
+      opacity: 0.34 !important;
+    }}
+    .card:after {{
+      content: "" !important;
+      position: absolute !important;
+      right: 16px !important;
+      top: 12px !important;
+      width: 116px !important;
+      height: 116px !important;
+      background: url("{mascot}") no-repeat center / contain !important;
+      opacity: 0.24 !important;
+      pointer-events: none !important;
+    }}
+    .top, .header {{ padding-right: 124px !important; }}
+    .brand, .h1 {{
+      color: #c53926 !important;
+      text-shadow: 2px 2px 0 rgba(255,247,233,0.92) !important;
+    }}
+    .header:before {{
+      content: "" !important;
+      display: block !important;
+      width: 150px !important;
+      height: 56px !important;
+      margin-bottom: 8px !important;
+      background: url("{sign}") no-repeat left center / contain !important;
+    }}
+    .item, .stat, .chapter, .chapter-list, .block, .kv, .intro {{
+      border: 3px solid #5d7028 !important;
+      border-radius: 8px !important;
+      background: #fff7e9 !important;
+      box-shadow: 4px 4px 0 rgba(93,112,40,0.16) !important;
+    }}
+    .badge, .idx, .tag, .book-id {{
+      border: 2px solid #5d7028 !important;
+      border-radius: 7px !important;
+      background: #efdfc7 !important;
+      color: #5d7028 !important;
+      box-shadow: none !important;
+    }}
+    .url, .meta, .sub, .time, .footer, .author, .k, .section-title, .chapter-meta {{
+      color: #6f7653 !important;
+      opacity: 1 !important;
+    }}
+  </style>
+        """
+    if style == "constructivist_people":
+        home_bg = _asset_data_url("constructivist_people", "people_we_home_bg.jpg")
+        detail_bg = _asset_data_url("constructivist_people", "people_we_detail_bg.jpg")
+        name_label = _asset_data_url("constructivist_people", "name_label.png")
+        red_mark = _asset_data_url("constructivist_people", "red_brush_mark.png")
+        barrage = _asset_data_url("constructivist_people", "barrage_strip.png")
+        return f"""
+  <style id="getcwm-card-theme">
+    body {{
+      background:
+        linear-gradient(180deg, rgba(232,229,220,0.06), rgba(10,10,10,0.12)),
+        url("{home_bg}") no-repeat center / cover,
+        linear-gradient(180deg, #e8e5dc, #cfcfc9) !important;
+      color: #24231f !important;
+      font-family: "Bahnschrift", "Microsoft YaHei", "PingFang SC", sans-serif !important;
+      letter-spacing: 0.01em !important;
+    }}
+    .card {{
+      border: 0 !important;
+      border-radius: 0 !important;
+      background:
+        linear-gradient(180deg, rgba(239,238,226,0.56), rgba(215,216,204,0.48)),
+        url("{detail_bg}") no-repeat center / cover !important;
+      box-shadow:
+        0 0 0 2px rgba(38,37,34,0.12),
+        18px 18px 0 rgba(38,37,34,0.20) !important;
+    }}
+    .card:before {{
+      content: "" !important;
+      position: absolute !important;
+      left: 22px !important;
+      top: 28px !important;
+      width: 185px !important;
+      height: 82px !important;
+      background: url("{name_label}") no-repeat left top / contain !important;
+      transform: none !important;
+      opacity: 0.22 !important;
+      pointer-events: none !important;
+    }}
+    .card:after {{
+      content: "" !important;
+      position: absolute !important;
+      right: 22px !important;
+      top: 58px !important;
+      width: 220px !important;
+      height: 54px !important;
+      background: url("{barrage}") no-repeat center / contain !important;
+      opacity: 0.54 !important;
+      pointer-events: none !important;
+    }}
+    .top, .header {{
+      padding: 10px 230px 12px 18px !important;
+      min-height: 88px !important;
+      border-left: 5px solid #9f302a !important;
+      background:
+        linear-gradient(90deg, rgba(239,238,226,0.42), rgba(239,238,226,0.12), transparent) !important;
+    }}
+    .brand, .h1, .title {{
+      color: #262522 !important;
+      text-shadow: none !important;
+      font-weight: 950 !important;
+    }}
+    .top:after, .header:after {{
+      content: "" !important;
+      position: absolute !important;
+      left: 18px !important;
+      bottom: -18px !important;
+      width: 210px !important;
+      height: 40px !important;
+      background: url("{red_mark}") no-repeat left center / contain !important;
+      opacity: 0.72 !important;
+    }}
+    .item, .stat, .chapter, .chapter-list, .block, .kv, .intro {{
+      border: 2px solid #262522 !important;
+      border-radius: 0 !important;
+      background: rgba(239,238,226,0.50) !important;
+      box-shadow: 7px 7px 0 rgba(38,37,34,0.14) !important;
+      backdrop-filter: blur(2px) !important;
+    }}
+    .badge, .idx, .tag, .book-id {{
+      border: 2px solid #262522 !important;
+      border-radius: 0 !important;
+      background: rgba(25,25,25,0.92) !important;
+      color: #f4f1e8 !important;
+      box-shadow: 4px 4px 0 rgba(159,48,42,0.42) !important;
+    }}
+    .stat .v, .kv .v, .chapter .v {{ color: #9f302a !important; }}
+    .url, .meta, .sub, .time, .footer, .author, .k, .section-title, .chapter-meta {{
+      color: #5f5a4f !important;
+      opacity: 1 !important;
+      font-weight: 800 !important;
+    }}
+  </style>
+        """
+    return ""
+
+
+def _card_source_profile(source: Any) -> dict[str, str]:
+    source_key = str(source or "cwm").strip().lower()
+    return _CARD_SOURCE_PROFILES.get(source_key, _CARD_SOURCE_PROFILES["cwm"])
+
+
+def _build_search_card_data(
+    results: list[Mapping[str, Any]],
+    *,
+    query: str | None,
+    max_items: int,
+    source: Any,
+) -> dict[str, Any]:
+    items = list(results)[: max(1, int(max_items))]
+    return {
+        "profile": _card_source_profile(source),
+        "items": items,
+        "query": query,
+        "total_count": len(results),
+        "shown_count": len(items),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _build_book_details_card_data(details: Mapping[str, Any]) -> dict[str, Any]:
+    source = str(details.get("Source") or details.get("source") or "cwm").strip()
+    profile = _card_source_profile(source)
+    is_fanqie = profile["name"] == "番茄小说"
+
+    stat_map = dict(details.get("data2", {}) or {})
+    prop_map = dict(details.get("data", {}) or {})
+    fanqie_extra = dict(details.get("fanqie_extra", {}) or {})
+    chapter_preview = list(fanqie_extra.get("chapter_preview", []) or [])
+    stat_click = stat_map.get("总点击", "")
+    stat_fav = stat_map.get("总收藏", "")
+    stat_words = stat_map.get("总字数", "")
+
+    if is_fanqie:
+        prop_items = [
+            ("来源", prop_map.get("来源", profile["name"])),
+            ("状态", prop_map.get("状态", "")),
+            (
+                "分卷",
+                "、".join(fanqie_extra.get("volume_names", []) or [])
+                or prop_map.get("分卷", ""),
+            ),
+            ("原始作者", fanqie_extra.get("original_authors", "")),
+        ]
+        prop_items = [(key, val) for key, val in prop_items if _display_value(val, "")]
+        stat_cards = [
+            (
+                "阅读量",
+                _compact_number(
+                    fanqie_extra.get("read_count")
+                    or stat_map.get("阅读量")
+                    or stat_click
+                ),
+            ),
+            (
+                "章节数",
+                _display_value(fanqie_extra.get("chapter_total") or prop_map.get("章节数")),
+            ),
+            ("总字数", _display_value(stat_words)),
+        ]
+    else:
+        prop_items = list(prop_map.items())[:8]
+        chapter_preview = []
+        stat_cards = [
+            ("总点击", _display_value(stat_click)),
+            ("总收藏", _display_value(stat_fav)),
+            ("总字数", _display_value(stat_words)),
+        ]
+
+    return {
+        "profile": profile,
+        "works_name": details.get("Works_Name", "") or "",
+        "author_name": details.get("Author_Name", "") or "",
+        "tag_list": list(details.get("Tag_List", []) or []),
+        "chapter_name": details.get("Chapter_Name", "") or "",
+        "update_ts": int(details.get("Update_Time", -1) or -1),
+        "cover_url": details.get("Cover_Image", "") or "",
+        "prop_items": prop_items,
+        "stat_cards": stat_cards,
+        "chapter_preview": chapter_preview,
+        "intro": (details.get("Brief_Introduction", "") or "").strip() or "（无简介）",
+    }
+
+
+def _build_subscribe_update_card_data(
+    details: Mapping[str, Any], *, book_id: int
+) -> dict[str, Any]:
+    source = str(details.get("Source") or details.get("source") or "cwm").strip()
+    profile = _card_source_profile(source)
+    return {
+        "profile": profile,
+        "works_name": details.get("Works_Name", "") or f"书籍ID：{int(book_id)}",
+        "author_name": details.get("Author_Name", "") or "未知作者",
+        "chapter_name": details.get("Chapter_Name", "") or "未知章节",
+        "update_ts": int(details.get("Update_Time", -1) or -1),
+        "cover_url": details.get("Cover_Image", "") or "",
+        "book_url": profile["book_url_template"].format(book_id=int(book_id)),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _normalize_t2i_endpoint(endpoint: Any) -> str:
+    base = str(endpoint or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/text2img/generate"):
+        return base
+    if base.endswith("/text2img"):
+        return f"{base}/generate"
+    return f"{base}/text2img/generate"
+
+
+def _is_image_bytes(data: bytes) -> bool:
+    return data.startswith(b"\x89PNG") or data.startswith(b"\xff\xd8")
+
+
+def _decode_t2i_json_image(data: Any) -> bytes | None:
+    if isinstance(data, str):
+        text = data.strip()
+        if text.startswith("data:image/") and "," in text:
+            text = text.split(",", 1)[1]
+        try:
+            decoded = base64.b64decode(text, validate=False)
+        except Exception:
+            return None
+        return decoded if _is_image_bytes(decoded) else None
+    if isinstance(data, Mapping):
+        for key in ("image", "img", "data", "result", "base64"):
+            decoded = _decode_t2i_json_image(data.get(key))
+            if decoded:
+                return decoded
+    return None
+
+
+def _html_to_image_t2i_document(html_str: str, size: tuple[int, int]) -> str:
+    width, height = int(size[0]), int(size[1])
+    fixed_size_css = f"""
+  <style id="getcwm-t2i-fixed-size">
+    html, body {{
+      width: 100vw !important;
+      min-width: {width}px !important;
+      max-width: none !important;
+      height: auto !important;
+      min-height: 0 !important;
+      margin: 0 !important;
+      overflow: visible !important;
+    }}
+    body {{
+      padding: 26px !important;
+    }}
+    .card {{
+      width: 100% !important;
+      min-height: 0 !important;
+      height: auto !important;
+      overflow: hidden !important;
+    }}
+  </style>
+    """
+    if "</head>" in html_str:
+        return html_str.replace("</head>", f"{fixed_size_css}</head>", 1)
+    return fixed_size_css + html_str
+
+
+def _render_html_to_png_t2i(
+    *,
+    html_str: str,
+    size: tuple[int, int],
+    output_dir: Path,
+    filename: str,
+    endpoint: str,
+    timeout: float,
 ) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    url = _normalize_t2i_endpoint(endpoint)
+    if not url:
+        raise RuntimeError("T2I endpoint is empty")
+
+    t2i_html = _html_to_image_t2i_document(html_str, size)
+    payload = {
+        "tmpl": t2i_html,
+        "json": False,
+        "tmpldata": {},
+        "options": {
+            "full_page": True,
+            "type": "png",
+            "scale": "device",
+            "device_scale_factor_level": "ultra",
+        },
+    }
+    response = requests.post(url, json=payload, timeout=max(1.0, float(timeout or 20)))
+    response.raise_for_status()
+    content_type = response.headers.get("content-type", "").lower()
+    body = response.content
+
+    image_bytes: bytes | None = body if _is_image_bytes(body) or "image/" in content_type else None
+    if image_bytes is None:
+        try:
+            image_bytes = _decode_t2i_json_image(response.json())
+        except Exception:
+            image_bytes = None
+    if image_bytes is None:
+        raise RuntimeError(f"T2I returned non-image response: {body[:80]!r}")
+
+    out_path = output_dir / filename
+    out_path.write_bytes(image_bytes)
+    return out_path
+
+
+def _render_html_to_png(
+    *,
+    html_str: str,
+    size: tuple[int, int],
+    output_dir: Path,
+    filename: str,
+    t2i_enabled: bool = False,
+    t2i_endpoint: str = "",
+    t2i_timeout: float = 20,
+) -> Path:
+    if t2i_enabled and str(t2i_endpoint or "").strip():
+        try:
+            return _render_html_to_png_t2i(
+                html_str=html_str,
+                size=size,
+                output_dir=output_dir,
+                filename=filename,
+                endpoint=t2i_endpoint,
+                timeout=t2i_timeout,
+            )
+        except Exception:
+            from astrbot.api import logger as _logger
+
+            _logger.warning(
+                "[Getcwm][渲染] T2I 渲染失败，回退到本地 Html2Image: endpoint=%s filename=%s",
+                t2i_endpoint,
+                filename,
+                exc_info=True,
+            )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     if Html2Image is None:  # pragma: no cover
         err = globals().get("_HTML2IMAGE_IMPORT_ERROR")
@@ -134,10 +696,19 @@ def render_search_card(
     *,
     query: str | None = None,
     max_items: int = 8,
+    source: str = "cwm",
+    card_style: str = "glass",
+    t2i_enabled: bool = False,
+    t2i_endpoint: str = "",
+    t2i_timeout: float = 20,
     output_dir: str | Path = "./renders",
 ) -> str:
-    items = list(results)[: max(1, int(max_items))]
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    card_data = _build_search_card_data(
+        results, query=query, max_items=max_items, source=source
+    )
+    items = card_data["items"]
+    profile = card_data["profile"]
+    now_str = card_data["generated_at"]
 
     width = 1024
     height = _calc_search_card_height(len(items))
@@ -315,13 +886,14 @@ def render_search_card(
       z-index: 1;
     }}
   </style>
+  {_card_theme_css(card_style)}
 </head>
 <body>
   <div class="card">
     <div class="header">
       <div>
-        <div class="h1">刺猬猫 · 搜索结果</div>
-        <div class="sub">共 {html_escape(len(results))} 条 · 展示前 {html_escape(len(items))} 条 · 生成于 {now_str}</div>
+        <div class="h1">{html_escape(profile["search_title"])}</div>
+        <div class="sub">共 {html_escape(card_data["total_count"])} 条 · 展示前 {html_escape(card_data["shown_count"])} 条 · 生成于 {now_str}</div>
       </div>
       {query_badge}
     </div>
@@ -340,6 +912,9 @@ def render_search_card(
         size=(width, height),
         output_dir=Path(output_dir),
         filename=filename,
+        t2i_enabled=t2i_enabled,
+        t2i_endpoint=t2i_endpoint,
+        t2i_timeout=t2i_timeout,
     )
     return str(out_path)
 
@@ -349,36 +924,23 @@ def render_book_details_card(
     *,
     output_dir: str | Path = "./renders",
     session: Any | None = None,
+    card_style: str = "glass",
+    t2i_enabled: bool = False,
+    t2i_endpoint: str = "",
+    t2i_timeout: float = 20,
 ) -> str:
-    works_name = details.get("Works_Name", "") or ""
-    author_name = details.get("Author_Name", "") or ""
-    tag_list = list(details.get("Tag_List", []) or [])
-    chapter_name = details.get("Chapter_Name", "") or ""
-    update_ts = int(details.get("Update_Time", -1) or -1)
-    cover_url = details.get("Cover_Image", "") or ""
-    source = str(details.get("Source") or details.get("source") or "").strip()
-    is_fanqie = source == "fq"
-
-    stat_map = dict(details.get("data2", {}) or {})
-    stat_click = stat_map.get("总点击", "")
-    stat_fav = stat_map.get("总收藏", "")
-    stat_words = stat_map.get("总字数", "")
-
-    prop_map = dict(details.get("data", {}) or {})
-    fanqie_extra = dict(details.get("fanqie_extra", {}) or {})
-    chapter_preview = list(fanqie_extra.get("chapter_preview", []) or [])
-    if is_fanqie:
-        prop_items = [
-            ("来源", prop_map.get("来源", "番茄小说")),
-            ("状态", prop_map.get("状态", "")),
-            ("分卷", "、".join(fanqie_extra.get("volume_names", []) or []) or prop_map.get("分卷", "")),
-            ("原始作者", fanqie_extra.get("original_authors", "")),
-        ]
-        prop_items = [(key, val) for key, val in prop_items if _display_value(val, "")]
-    else:
-        prop_items = list(prop_map.items())[:8]
-
-    intro = (details.get("Brief_Introduction", "") or "").strip() or "（无简介）"
+    card_data = _build_book_details_card_data(details)
+    profile = card_data["profile"]
+    works_name = card_data["works_name"]
+    author_name = card_data["author_name"]
+    tag_list = card_data["tag_list"]
+    chapter_name = card_data["chapter_name"]
+    update_ts = card_data["update_ts"]
+    cover_url = card_data["cover_url"]
+    prop_items = card_data["prop_items"]
+    stat_cards = card_data["stat_cards"]
+    chapter_preview = card_data["chapter_preview"]
+    intro = card_data["intro"]
 
     cover_data_uri = fetch_image_data_uri(str(cover_url), session=session)
     cover_html = (
@@ -394,27 +956,12 @@ def render_book_details_card(
         f"<div class='kv'><div class='k'>{html_escape(key)}</div><div class='v'>{html_escape(val)}</div></div>"
         for key, val in prop_items
     )
-    if is_fanqie:
-        stat_cards = [
-            ("阅读量", _compact_number(fanqie_extra.get("read_count") or stat_map.get("阅读量") or stat_click)),
-            ("章节数", _display_value(fanqie_extra.get("chapter_total") or prop_map.get("章节数"))),
-            ("总字数", _display_value(stat_words)),
-        ]
-        brand_name = "番茄小说 · 书籍详情"
-    else:
-        stat_cards = [
-            ("总点击", _display_value(stat_click)),
-            ("总收藏", _display_value(stat_fav)),
-            ("总字数", _display_value(stat_words)),
-        ]
-        brand_name = "刺猬猫 · 书籍详情"
-
     stats_html = "".join(
         f"<div class='stat'><div class='k'>{html_escape(key)}</div><div class='v'>{html_escape(val)}</div></div>"
         for key, val in stat_cards
     )
     chapter_rows_html = ""
-    if is_fanqie and chapter_preview:
+    if chapter_preview:
         rows: list[str] = []
         for chapter in chapter_preview[-4:]:
             if not isinstance(chapter, Mapping):
@@ -438,7 +985,14 @@ def render_book_details_card(
 
     width = 1024
     height = _calc_book_details_card_height(
-        min(len(tag_list), 10), len(prop_items), len(chapter_preview) if is_fanqie else 0
+        min(len(tag_list), 10),
+        len(prop_items),
+        len(chapter_preview),
+        len(str(chapter_name or "")),
+        max(
+            [len(str(chapter.get("title", "") or "")) for chapter in chapter_preview if isinstance(chapter, Mapping)]
+            or [0]
+        ),
     )
 
     html_str = f"""<!doctype html>
@@ -585,7 +1139,8 @@ def render_book_details_card(
       font-size: 14px;
       font-weight: 900;
       line-height: 1.28;
-      {line_clamp_css(2)}
+      white-space: normal;
+      overflow-wrap: anywhere;
     }}
     .props {{
       margin-top: 12px;
@@ -619,7 +1174,8 @@ def render_book_details_card(
       font-size: 13px;
       font-weight: 900;
       line-height: 1.25;
-      {line_clamp_css(1)}
+      white-space: normal;
+      overflow-wrap: anywhere;
     }}
     .chapter-meta {{
       margin-top: 4px;
@@ -643,11 +1199,12 @@ def render_book_details_card(
       {line_clamp_css(4)}
     }}
   </style>
+  {_card_theme_css(card_style)}
 </head>
 <body>
   <div class="card">
     <div class="top">
-      <div class="brand">{html_escape(brand_name)}</div>
+      <div class="brand">{html_escape(profile["detail_title"])}</div>
       <div class="time">更新时间：{html_escape(format_ts_cn(update_ts))}</div>
     </div>
     <div class="main">
@@ -691,6 +1248,9 @@ def render_book_details_card(
         size=(width, height),
         output_dir=Path(output_dir),
         filename=filename,
+        t2i_enabled=t2i_enabled,
+        t2i_endpoint=t2i_endpoint,
+        t2i_timeout=t2i_timeout,
     )
     return str(out_path)
 
@@ -701,20 +1261,20 @@ def render_subscribe_update_card(
     book_id: int,
     output_dir: str | Path = "./renders",
     session: Any | None = None,
+    card_style: str = "glass",
+    t2i_enabled: bool = False,
+    t2i_endpoint: str = "",
+    t2i_timeout: float = 20,
 ) -> str:
-    works_name = details.get("Works_Name", "") or f"书籍ID：{int(book_id)}"
-    author_name = details.get("Author_Name", "") or "未知作者"
-    chapter_name = details.get("Chapter_Name", "") or "未知章节"
-    update_ts = int(details.get("Update_Time", -1) or -1)
-    cover_url = details.get("Cover_Image", "") or ""
-
-    source = str(details.get("Source") or details.get("source") or "").strip()
-    book_url = (
-        f"https://fanqienovel.com/page/{int(book_id)}"
-        if source == "fq"
-        else f"https://www.ciweimao.com/book/{int(book_id)}"
-    )
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    card_data = _build_subscribe_update_card_data(details, book_id=book_id)
+    profile = card_data["profile"]
+    works_name = card_data["works_name"]
+    author_name = card_data["author_name"]
+    chapter_name = card_data["chapter_name"]
+    update_ts = card_data["update_ts"]
+    cover_url = card_data["cover_url"]
+    book_url = card_data["book_url"]
+    now_str = card_data["generated_at"]
 
     cover_data_uri = fetch_image_data_uri(str(cover_url), session=session)
     cover_html = (
@@ -724,7 +1284,7 @@ def render_subscribe_update_card(
     )
 
     width = 1024
-    height = 520
+    height = _calc_subscribe_update_card_height(len(str(chapter_name or "")))
 
     html_str = f"""<!doctype html>
 <html lang="zh-CN">
@@ -850,7 +1410,8 @@ def render_subscribe_update_card(
       font-size: 14px;
       font-weight: 950;
       line-height: 1.32;
-      {line_clamp_css(3)}
+      white-space: normal;
+      overflow-wrap: anywhere;
     }}
     .row {{
       margin-top: 12px;
@@ -881,12 +1442,13 @@ def render_subscribe_update_card(
       text-align: right;
     }}
   </style>
+  {_card_theme_css(card_style)}
 </head>
 <body>
   <div class="card">
     <div class="top">
       <div class="brand">
-        <div class="t">刺猬猫 · 订阅更新</div>
+        <div class="t">{html_escape(profile["subscribe_title"])}</div>
         <div class="badge">NEW</div>
       </div>
       <div class="time">
@@ -928,6 +1490,9 @@ def render_subscribe_update_card(
         size=(width, height),
         output_dir=Path(output_dir),
         filename=filename,
+        t2i_enabled=t2i_enabled,
+        t2i_endpoint=t2i_endpoint,
+        t2i_timeout=t2i_timeout,
     )
     return str(out_path)
 

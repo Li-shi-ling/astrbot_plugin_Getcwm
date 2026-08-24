@@ -43,6 +43,10 @@ class GetcwmPlugin(Star):
         self._max_search_items = 8
         self.interval_time = config.get("interval_time", 20)
         self.subscribe_debug = bool(config.get("CWM_SUBSCRIBE_DEBUG", False))
+        self.card_style = str(config.get("card_style", "glass") or "glass")
+        self.t2i_enabled = bool(config.get("t2i_enabled", True))
+        self.t2i_endpoint = str(config.get("t2i_endpoint", "") or "").strip()
+        self.t2i_timeout = self._safe_int(config.get("t2i_timeout", 20), 20)
         self.subscribe_data_file = self._data_dir / "subscribe.json"
         self.subscribe_db_file = self._data_dir / "subscribe.db"
         self.subscribe_db = DBManager(self.subscribe_db_file)
@@ -56,6 +60,14 @@ class GetcwmPlugin(Star):
         # 订阅任务相关
         self.subscribe_task: asyncio.Task | None = None
         self.subscribe_running = True
+
+    def _card_render_kwargs(self) -> dict[str, object]:
+        return {
+            "card_style": self.card_style,
+            "t2i_enabled": self.t2i_enabled,
+            "t2i_endpoint": self.t2i_endpoint,
+            "t2i_timeout": max(1, int(self.t2i_timeout or 20)),
+        }
 
     @filter.llm_tool(name="cwm_search_books")
     async def cwm_search_books(
@@ -366,6 +378,7 @@ class GetcwmPlugin(Star):
                     query=query,
                     max_items=self._max_search_items,
                     output_dir=self._render_dir,
+                    **self._card_render_kwargs(),
                 )
 
             def gen_text():
@@ -400,6 +413,7 @@ class GetcwmPlugin(Star):
                     data,
                     output_dir=self._render_dir,
                     session=self._cwm_client.session,
+                    **self._card_render_kwargs(),
                 )
 
             def gen_text():
@@ -523,7 +537,9 @@ class GetcwmPlugin(Star):
                     items,
                     query=query,
                     max_items=self._max_search_items,
+                    source="fq",
                     output_dir=self._render_dir,
+                    **self._card_render_kwargs(),
                 )
 
             def gen_text():
@@ -647,6 +663,7 @@ class GetcwmPlugin(Star):
                 data,
                 output_dir=self._render_dir,
                 session=self._fq_client.session,
+                **self._card_render_kwargs(),
             )
 
         def gen_text():
@@ -1748,6 +1765,7 @@ class GetcwmPlugin(Star):
                 book_id=int(book_id),
                 output_dir=self._render_dir,
                 session=self._source_client_and_parser(source)[0].session,
+                **self._card_render_kwargs(),
             )
             self.subscribe_debug and logger.debug(
                 "[cwm] 推送更新：卡片渲染完成。book_id=%s image_path=%s",

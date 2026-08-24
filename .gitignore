@@ -212,7 +212,10 @@ AGENTS.md
 tests/*
 !tests/
 !tests/conftest.py
+!tests/test_cards.py
 !tests/test_fanqie.py
+!tests/test_main.py
+!tests/test_package_plugin.py
 .playwright-mcp/
 .pipeline-workspace/
 .omx/
