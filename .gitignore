@@ -221,3 +221,5 @@ tests/*
 .omx/
 scripts/
 日志/
+data/
+renders/
