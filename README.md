@@ -24,7 +24,7 @@
 番茄名片会展示番茄页面可获取的扩展数据，包括阅读量、章节数、分卷和最近章节预览；内部ID仅用于请求与订阅，不在卡片中展示。
 搜索结果卡片会显示书籍ID，方便直接使用 `/fq 订阅 书籍ID`。
 搜索、详情、订阅更新图片使用统一卡片模板，刺猬猫与番茄只通过输入数据和站点资料区分。
-卡片样式可通过 `card_style` 切换：`glass`、`light`、`industrial`、`retro_win`、`snowcap_shop`、`constructivist_people`。
+卡片样式可通过配置项 `card_style` 的下拉选项切换：`glass`、`light`、`industrial`、`retro_win`、`snowcap_shop`、`constructivist_people`。
 如果番茄搜索接口触发风控验证，插件会直接提示当前无法获取搜索结果，并写入日志。
 
 ## 订阅更新推送
@@ -44,7 +44,7 @@
 
  ## 👨‍💻 开发者 
  - **开发者**：Lishining 
- - **版本**：v1.1.19
+ - **版本**：v1.1.20
  - **标语**：cwm有些小说还是挺好看的
  - **QQ群**: 1083090761 
 

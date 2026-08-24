@@ -15,7 +15,8 @@
     "description": "卡片样式",
     "type": "string",
     "default": "glass",
-    "hint": "可选：glass（默认玻璃风）、light（浅色）、industrial（工业深色）、retro_win（复古窗口）、snowcap_shop（雪顶小店）、constructivist_people（人民构成主义）"
+    "options": ["glass", "light", "industrial", "retro_win", "snowcap_shop", "constructivist_people"],
+    "hint": "glass=默认玻璃风，light=浅色，industrial=工业深色，retro_win=复古窗口，snowcap_shop=雪顶小店，constructivist_people=人民构成主义"
   },
   "t2i_enabled": {
     "description": "是否启用远程 T2I 图片渲染",
