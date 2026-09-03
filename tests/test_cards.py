@@ -6,6 +6,8 @@ from pathlib import Path
 def test_calc_card_heights_grow_with_content(cards_module):
     assert cards_module._calc_search_card_height(3) > cards_module._calc_search_card_height(1)
     assert cards_module._calc_book_details_card_height(6, 4) > cards_module._calc_book_details_card_height(1, 1)
+    assert cards_module._calc_subscribe_update_card_height(10) <= 500
+    assert cards_module._calc_subscribe_update_card_height(120) > cards_module._calc_subscribe_update_card_height(10)
 
 
 def test_render_search_card_calls_renderer(monkeypatch, tmp_path, cards_module):
@@ -158,11 +160,14 @@ def test_render_html_to_png_uses_t2i_endpoint(monkeypatch, tmp_path, cards_modul
     assert seen["url"] == "https://example.test/text2img/generate"
     assert "<html></html>" in seen["json"]["tmpl"]
     assert "id=\"getcwm-t2i-fixed-size\"" in seen["json"]["tmpl"]
-    assert "width: 100vw" in seen["json"]["tmpl"]
+    assert "width: 100px" in seen["json"]["tmpl"]
     assert "min-width: 100px" in seen["json"]["tmpl"]
-    assert "height: auto" in seen["json"]["tmpl"]
+    assert "height: 100px" in seen["json"]["tmpl"]
+    assert "height: auto" not in seen["json"]["tmpl"]
     assert seen["json"]["json"] is False
-    assert seen["json"]["options"]["full_page"] is True
+    assert seen["json"]["options"]["full_page"] is False
+    assert seen["json"]["options"]["viewport_width"] == 100
+    assert seen["json"]["options"]["viewport_height"] == 100
     assert seen["timeout"] == 7
 
 
@@ -384,7 +389,9 @@ def test_render_subscribe_update_card_does_not_clamp_chapter_title(
     assert long_chapter in html
     block = html.split(".block .v", 1)[1].split(".row", 1)[0]
     assert "-webkit-line-clamp" not in block
-    assert captured["size"][1] > 520
+    assert captured["size"][1] == cards_module._calc_subscribe_update_card_height(
+        len(long_chapter)
+    )
 
 
 def test_render_fanqie_subscribe_update_card_uses_fanqie_brand(

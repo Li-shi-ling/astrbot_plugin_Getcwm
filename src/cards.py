@@ -106,8 +106,8 @@ def _calc_book_details_card_height(
 
 
 def _calc_subscribe_update_card_height(chapter_name_len: int = 0) -> int:
-    chapter_lines = _estimated_text_lines(chapter_name_len, 36, min_lines=3)
-    return 496 + chapter_lines * 28
+    chapter_lines = _estimated_text_lines(chapter_name_len, 36)
+    return 480 + max(0, chapter_lines - 2) * 28
 
 
 def _display_value(value: Any, fallback: str = "未知") -> str:
@@ -578,21 +578,18 @@ def _html_to_image_t2i_document(html_str: str, size: tuple[int, int]) -> str:
     fixed_size_css = f"""
   <style id="getcwm-t2i-fixed-size">
     html, body {{
-      width: 100vw !important;
+      width: {width}px !important;
       min-width: {width}px !important;
-      max-width: none !important;
-      height: auto !important;
-      min-height: 0 !important;
+      max-width: {width}px !important;
+      height: {height}px !important;
+      min-height: {height}px !important;
+      max-height: {height}px !important;
       margin: 0 !important;
-      overflow: visible !important;
-    }}
-    body {{
-      padding: 26px !important;
+      overflow: hidden !important;
     }}
     .card {{
       width: 100% !important;
-      min-height: 0 !important;
-      height: auto !important;
+      height: 100% !important;
       overflow: hidden !important;
     }}
   </style>
@@ -622,10 +619,12 @@ def _render_html_to_png_t2i(
         "json": False,
         "tmpldata": {},
         "options": {
-            "full_page": True,
+            "full_page": False,
             "type": "png",
             "scale": "device",
             "device_scale_factor_level": "ultra",
+            "viewport_width": int(size[0]),
+            "viewport_height": int(size[1]),
         },
     }
     response = requests.post(url, json=payload, timeout=max(1.0, float(timeout or 20)))
